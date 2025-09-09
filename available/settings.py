@@ -59,3 +59,8 @@ EMAIL_USE_TLS = True
 EMAIL_HOST_USER = 'indarkx.applab@gmail.com'         # Your Gmail address
 EMAIL_HOST_PASSWORD = 'vowlobyfyreorbjd'   # App password only, not your login password!
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+from pathlib import Path
+import os
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'

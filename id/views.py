@@ -1,5 +1,5 @@
 # id/views.py
-import json
+import json, base64, uuid
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
@@ -7,6 +7,8 @@ from django.contrib.auth.hashers import make_password, check_password
 from django.core.mail import send_mail
 from django.shortcuts import render
 from django.core.paginator import Paginator
+from django.core.files.base import ContentFile
+from django.conf import settings
 from .models import UserAccount, EmailOTP
 from .utils import generate_otp_5, expiry_in
 
@@ -14,20 +16,11 @@ def _json_error(message, status=400):
     return JsonResponse({'success': False, 'message': message}, status=status)
 
 def admin_page(request):
-    # 20 rows per page for both tables
     users_qs = UserAccount.objects.order_by('-created_at')
     otps_qs = EmailOTP.objects.order_by('-created_at')
-
-    u_page_no = request.GET.get('u', 1)
-    o_page_no = request.GET.get('o', 1)
-
-    users_page = Paginator(users_qs, 20).get_page(u_page_no)
-    otps_page = Paginator(otps_qs, 20).get_page(o_page_no)
-
-    return render(request, 'id.html', {
-        'users_page': users_page,
-        'otps_page': otps_page,
-    })
+    users_page = Paginator(users_qs, 20).get_page(request.GET.get('u', 1))
+    otps_page = Paginator(otps_qs, 20).get_page(request.GET.get('o', 1))
+    return render(request, 'id.html', {'users_page': users_page, 'otps_page': otps_page})
 
 @csrf_exempt
 def signup_view(request):
@@ -42,9 +35,7 @@ def signup_view(request):
         if UserAccount.objects.filter(email=email).exists():
             return JsonResponse({'success': False, 'message': 'Email already created, login with password'})
         ua = UserAccount.objects.create(
-            email=email,
-            password_hash=make_password(password),
-            password_plain=password  # DEV ONLY: do not use in production
+            email=email, password_hash=make_password(password), password_plain=password
         )
         return JsonResponse({'success': True, 'message': 'Account created', 'email': ua.email})
     except Exception as e:
@@ -111,7 +102,7 @@ def verify_otp_view(request):
         except UserAccount.DoesNotExist:
             return _json_error('Account not found', 404)
         ua.password_hash = make_password(new_password)
-        ua.password_plain = new_password  # DEV ONLY: reflect change for visibility
+        ua.password_plain = new_password  # DEV ONLY
         ua.save(update_fields=['password_hash', 'password_plain'])
         rec.is_verified = True
         rec.save(update_fields=['is_verified'])
@@ -141,12 +132,62 @@ def delete_otp_view(request):
         return _json_error('POST required', 405)
     try:
         payload = json.loads(request.body.decode('utf-8'))
-        otp_id = payload.get('id')
-        if not otp_id:
+        oid = payload.get('id')
+        if not oid:
             return _json_error('OTP id required')
-        deleted, _ = EmailOTP.objects.filter(id=otp_id).delete()
+        deleted, _ = EmailOTP.objects.filter(id=oid).delete()
         if deleted == 0:
             return _json_error('OTP not found', 404)
-        return JsonResponse({'success': True, 'message': 'OTP deleted', 'id': otp_id})
+        return JsonResponse({'success': True, 'message': 'OTP deleted', 'id': oid})
     except Exception as e:
         return _json_error(f'Error: {e}')
+
+def _profile_to_dict(u: UserAccount, request):
+    img_url = ''
+    if u.profile_image:
+      # absolute URL
+      img_url = request.build_absolute_uri(u.profile_image.url)
+    return {'email': u.email, 'name': u.name, 'bio': u.bio, 'profile_image_url': img_url}
+
+@csrf_exempt
+def profile_view(request):
+    if request.method == 'GET':
+        email = (request.GET.get('email') or '').strip().lower()
+        if not email:
+            return _json_error('Email required')
+        try:
+            u = UserAccount.objects.get(email=email)
+        except UserAccount.DoesNotExist:
+            return JsonResponse({'success': True, 'profile': {'email': email, 'name': '', 'bio': '', 'profile_image_url': ''}})
+        return JsonResponse({'success': True, 'profile': _profile_to_dict(u, request)})
+
+    if request.method == 'POST':
+        try:
+            payload = json.loads(request.body.decode('utf-8'))
+            email = (payload.get('email') or '').strip().lower()
+            name = (payload.get('name') or '').strip()
+            bio = (payload.get('bio') or '').strip()
+            b64 = payload.get('profile_image_base64')
+            if not email:
+                return _json_error('Email required')
+            try:
+                u = UserAccount.objects.get(email=email)
+            except UserAccount.DoesNotExist:
+                return _json_error('Account not found', 404)
+            if len(bio) > 100:
+                return _json_error('Bio must be <= 100 chars')
+            u.name = name[:80]
+            u.bio = bio[:100]
+            if b64:
+                try:
+                    data = base64.b64decode(b64)
+                    fname = f"{uuid.uuid4().hex}.png"
+                    u.profile_image.save(fname, ContentFile(data), save=False)
+                except Exception:
+                    return _json_error('Invalid image data')
+            u.save()
+            return JsonResponse({'success': True, 'profile': _profile_to_dict(u, request)})
+        except Exception as e:
+            return _json_error(f'Error: {e}')
+
+    return _json_error('Method not allowed', 405)
