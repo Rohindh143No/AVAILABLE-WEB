@@ -21,6 +21,9 @@
     .pager a, .pager span { color:#cfcfcf; text-decoration: none; padding: 4px 8px; border: 1px solid #2a2a2a; border-radius: 4px; }
     .pager .current { background:#1f1f1f; font-weight: 600; }
     .avatar { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; border:1px solid #2a2a2a; }
+    .role-badge { display:inline-block; padding:3px 8px; border:1px solid #2a2a2a; border-radius:10px; font-size:12px; color:#9ffcff; }
+    .tag-pill { display:inline-block; padding:3px 8px; border:1px solid #2a2a2a; border-radius:10px; font-size:12px; color:#e6e6e6; background:#1a1a1a; }
+    .muted { color:#a7a7a7; }
   </style>
 </head>
 <body>
@@ -33,7 +36,10 @@
         <th>Email</th>
         <th>Password</th>
         <th>Name</th>
+        <th>Phone</th>
+        <th>Tag</th>
         <th>Bio</th>
+        <th>Role</th>
         <th>Image</th>
         <th>Created</th>
         <th class="actions">Actions</th>
@@ -48,21 +54,18 @@
           <button class="icon-btn" title="Show/Hide" onclick="togglePwd(this)">👁</button>
         </td>
         <td>{{ u.name }}</td>
+        <td>{{ u.phone_number }}</td>
+        <td>{% if u.tag %}<span class="tag-pill">#{{ u.tag }}</span>{% else %}-{% endif %}</td>
         <td>{{ u.bio }}</td>
-        <td>
-          {% if u.profile_image %}
-            <img src="{{ u.profile_image.url }}" class="avatar" alt="avatar">
-          {% else %}
-            -
-          {% endif %}
-        </td>
-        <td>{{ u.created_at }}</td>
+        <td>{% if u.role %}<span class="role-badge">{{ u.role|upper }}</span>{% else %}-{% endif %}</td>
+        <td>{% if u.profile_image %}<img src="{{ u.profile_image.url }}" class="avatar" alt="avatar">{% else %}-{% endif %}</td>
+        <td class="muted">{{ u.created_at }}</td>
         <td class="actions">
           <button class="icon-btn" title="Delete user" onclick="deleteUser('{{ u.email }}', this)">🗑</button>
         </td>
       </tr>
       {% empty %}
-      <tr><td colspan="7">No accounts yet</td></tr>
+      <tr><td colspan="10">No accounts yet</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -101,8 +104,8 @@
       <tr data-otp-id="{{ o.id }}">
         <td>{{ o.email }}</td>
         <td><code>{{ o.code }}</code></td>
-        <td>{{ o.created_at }}</td>
-        <td>{{ o.expires_at }}</td>
+        <td class="muted">{{ o.created_at }}</td>
+        <td class="muted">{{ o.expires_at }}</td>
         <td>{{ o.is_verified }}</td>
         <td class="actions">
           <button class="icon-btn" title="Delete OTP" onclick="deleteOtp({{ o.id }}, this)">🗑</button>
@@ -136,33 +139,46 @@
       const span = btn.closest('td').querySelector('.pwd');
       const plain = span.getAttribute('data-plain') || '';
       if (!plain) return;
-      if (span.classList.contains('pwd-dot')) {
-        span.textContent = plain;
-        span.classList.remove('pwd-dot');
-      } else {
-        span.textContent = '••••••••';
-        span.classList.add('pwd-dot');
-      }
+      if (span.classList.contains('pwd-dot')) { span.textContent = plain; span.classList.remove('pwd-dot'); }
+      else { span.textContent = '••••••••'; span.classList.add('pwd-dot'); }
     }
     async function deleteUser(email, btn) {
       if (!confirm('Delete user ' + email + '?')) return;
       try {
-        const res = await fetch('/api/auth/delete-user/', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({email}) });
+        const res = await fetch('/api/auth/delete-user/', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({email})
+        });
         const data = await res.json();
         if (data.success) {
-          const tr = btn.closest('tr'); tr.parentNode.removeChild(tr);
-        } else alert(data.message || 'Delete failed');
-      } catch (e) { alert('Network error: ' + e); }
+          const tr = btn.closest('tr');
+          tr.parentNode.removeChild(tr);
+        } else {
+          alert(data.message || 'Delete failed');
+        }
+      } catch (e) {
+        alert('Network error: ' + e);
+      }
     }
     async function deleteOtp(id, btn) {
       if (!confirm('Delete OTP #' + id + '?')) return;
       try {
-        const res = await fetch('/api/auth/delete-otp/', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id}) });
+        const res = await fetch('/api/auth/delete-otp/', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({id})
+        });
         const data = await res.json();
         if (data.success) {
-          const tr = btn.closest('tr'); tr.parentNode.removeChild(tr);
-        } else alert(data.message || 'Delete failed');
-      } catch (e) { alert('Network error: ' + e); }
+          const tr = btn.closest('tr');
+          tr.parentNode.removeChild(tr);
+        } else {
+          alert(data.message || 'Delete failed');
+        }
+      } catch (e) {
+        alert('Network error: ' + e);
+      }
     }
   </script>
 </body>
