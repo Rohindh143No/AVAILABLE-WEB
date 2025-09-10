@@ -32,8 +32,10 @@ def admin_page(request):
     """
     users_qs = UserAccount.objects.order_by('-created_at')
     otps_qs = EmailOTP.objects.order_by('-created_at')
+
     users_page = Paginator(users_qs, 20).get_page(request.GET.get('u', 1))
     otps_page = Paginator(otps_qs, 20).get_page(request.GET.get('o', 1))
+
     return render(request, 'id.html', {
         'users_page': users_page,
         'otps_page': otps_page,
@@ -51,11 +53,12 @@ def signup_view(request):
             return _json_error('Email and password required')
         if UserAccount.objects.filter(email=email).exists():
             return JsonResponse({'success': False, 'message': 'Email already created, login with password'})
+
         ua = UserAccount.objects.create(
             email=email,
             password_hash=make_password(password),
             # DEV ONLY: store plain password for local dashboard view; remove for production
-            password_plain=password
+            password_plain=password,
         )
         return JsonResponse({'success': True, 'message': 'Account created', 'email': ua.email})
     except Exception as e:
@@ -110,6 +113,7 @@ def verify_otp_view(request):
         new_password = payload.get('new_password') or ''
         if not email or not otp or not new_password:
             return _json_error('Email, OTP, and new_password required')
+
         rec = EmailOTP.objects.filter(email=email, code=otp).order_by('-created_at').first()
         if not rec:
             return _json_error('Invalid OTP', 400)
@@ -117,16 +121,19 @@ def verify_otp_view(request):
             return _json_error('OTP already used', 400)
         if timezone.now() > rec.expires_at:
             return _json_error('OTP expired', 400)
+
         try:
             ua = UserAccount.objects.get(email=email)
         except UserAccount.DoesNotExist:
             return _json_error('Account not found', 404)
+
         ua.password_hash = make_password(new_password)
-        # DEV ONLY: reflect new plain password for local dashboard; remove for production
-        ua.password_plain = new_password
+        ua.password_plain = new_password  # DEV ONLY
         ua.save(update_fields=['password_hash', 'password_plain'])
+
         rec.is_verified = True
         rec.save(update_fields=['is_verified'])
+
         return JsonResponse({'success': True, 'message': 'Password updated'})
     except Exception as e:
         return _json_error(f'Error: {e}')
@@ -170,12 +177,9 @@ def _profile_to_dict(u: UserAccount, request):
     img_url = ''
     if u.profile_image:
         img_url = request.build_absolute_uri(u.profile_image.url)
-    # Computed stats
     jobs_posted = OwnerJobPost.objects.filter(posted_by=u).count()
     jobs_completed = OwnerJobPost.objects.filter(posted_by=u, is_completed=True).count()
-    earnings_dec = OwnerJobPost.objects.filter(posted_by=u, is_completed=True).aggregate(
-        total=Sum('price')
-    )['total'] or Decimal('0.00')
+    earnings_dec = OwnerJobPost.objects.filter(posted_by=u, is_completed=True).aggregate(total=Sum('price'))['total'] or Decimal('0.00')
     return {
         'email': u.email,
         'name': u.name,
@@ -207,8 +211,16 @@ def profile_view(request):
             return JsonResponse({
                 'success': True,
                 'profile': {
-                    'email': email, 'name': '', 'bio': '', 'role': '', 'phone_number': '', 'tag': '', 'profile_image_url': '',
-                    'jobs_posted': 0, 'jobs_completed': 0, 'earnings': 0.0
+                    'email': email,
+                    'name': '',
+                    'bio': '',
+                    'role': '',
+                    'phone_number': '',
+                    'tag': '',
+                    'profile_image_url': '',
+                    'jobs_posted': 0,
+                    'jobs_completed': 0,
+                    'earnings': 0.0,
                 }
             })
         return JsonResponse({'success': True, 'profile': _profile_to_dict(u, request)})
@@ -233,19 +245,18 @@ def profile_view(request):
 
             if len(bio) > 100:
                 return _json_error('Bio must be <= 100 chars')
-            # phone required and simple validation
             if not phone_number:
                 return _json_error('Phone number required')
-            if not phone_number.replace('+', '').replace('-', '').replace(' ', '').isdigit():
+            compact = phone_number.replace('+', '').replace('-', '').replace(' ', '')
+            if not compact.isdigit():
                 return _json_error('Invalid phone number')
 
-            # Validate role if provided
             if role and role not in VALID_ROLES:
                 return _json_error('Invalid role')
 
             u.name = name[:80]
             u.bio = bio[:100]
-            if role and hasattr(u, 'role'):
+            if role:
                 u.role = role
             u.phone_number = phone_number[:20]
             u.tag = tag[:30]
@@ -271,17 +282,32 @@ def _paginate(request, qs, page_size=20):
     page_obj = paginator.get_page(page)
     return page_obj, paginator
 
-def _serialize_owner_job(j: OwnerJobPost):
+def _serialize_user_brief(u: UserAccount, request):
+    img_url = ''
+    if u.profile_image:
+        img_url = request.build_absolute_uri(u.profile_image.url)
+    return {
+        'email': u.email,
+        'name': u.name,
+        'bio': u.bio,
+        'tag': getattr(u, 'tag', ''),
+        'profile_image_url': img_url,
+    }
+
+def _serialize_owner_job(j: OwnerJobPost, request):
     return {
         'id': j.id,
         'title': j.title,
         'price': float(j.price),
         'district': j.district,
+        'address': j.address,
+        'description': j.description,
         'created_at': j.created_at.isoformat(),
         'is_completed': j.is_completed,
+        'posted_by': _serialize_user_brief(j.posted_by, request),
     }
 
-def _serialize_worker_avail(w: WorkerAvailability):
+def _serialize_worker_avail(w: WorkerAvailability, request):
     return {
         'id': w.id,
         'job_type': w.job_type,
@@ -289,14 +315,16 @@ def _serialize_worker_avail(w: WorkerAvailability):
         'district': w.district,
         'place': w.place,
         'time_info': w.time_info,
+        'description': w.description,
         'created_at': w.created_at.isoformat(),
+        'posted_by': _serialize_user_brief(w.posted_by, request),
     }
 
 @csrf_exempt
 def work_view(request):
     """
     GET /api/auth/work/?q=&district=&min_price=&max_price=&page=
-    POST /api/auth/work/  (owner only)
+    POST /api/auth/work/ (owner only)
     body: { email, title, price, district, address, description }
     """
     if request.method == 'GET':
@@ -310,6 +338,7 @@ def work_view(request):
             qs = qs.filter(Q(title__icontains=q) | Q(description__icontains=q) | Q(address__icontains=q))
         if district:
             qs = qs.filter(district__icontains=district)
+
         try:
             if min_price:
                 qs = qs.filter(price__gte=Decimal(min_price))
@@ -321,7 +350,7 @@ def work_view(request):
         page_obj, paginator = _paginate(request, qs, page_size=20)
         return JsonResponse({
             'success': True,
-            'results': [_serialize_owner_job(j) for j in page_obj.object_list],
+            'results': [_serialize_owner_job(j, request) for j in page_obj.object_list],
             'page': page_obj.number,
             'num_pages': paginator.num_pages
         })
@@ -342,21 +371,27 @@ def work_view(request):
                 u = UserAccount.objects.get(email=email)
             except UserAccount.DoesNotExist:
                 return _json_error('Account not found', 404)
+
             if u.role != 'owner':
                 return _json_error('Only owners can create work')
 
             if not title or not price_raw or not district or not address:
                 return _json_error('title, price, district, address required')
+
             try:
                 price = Decimal(price_raw)
             except InvalidOperation:
                 return _json_error('Invalid price')
 
             j = OwnerJobPost.objects.create(
-                posted_by=u, title=title[:120], price=price, district=district[:60],
-                address=address[:200], description=description
+                posted_by=u,
+                title=title[:120],
+                price=price,
+                district=district[:60],
+                address=address[:200],
+                description=description,
             )
-            return JsonResponse({'success': True, 'job': _serialize_owner_job(j)})
+            return JsonResponse({'success': True, 'job': _serialize_owner_job(j, request)})
         except Exception as e:
             return _json_error(f'Error: {e}')
 
@@ -366,7 +401,7 @@ def work_view(request):
 def workers_view(request):
     """
     GET /api/auth/workers/?q=&district=&min_price=&max_price=&page=
-    POST /api/auth/workers/  (worker only)
+    POST /api/auth/workers/ (worker only)
     body: { email, job_type, price, district, place, time_info, description }
     """
     if request.method == 'GET':
@@ -380,6 +415,7 @@ def workers_view(request):
             qs = qs.filter(Q(job_type__icontains=q) | Q(description__icontains=q) | Q(place__icontains=q))
         if district:
             qs = qs.filter(district__icontains=district)
+
         try:
             if min_price:
                 qs = qs.filter(price__gte=Decimal(min_price))
@@ -391,7 +427,7 @@ def workers_view(request):
         page_obj, paginator = _paginate(request, qs, page_size=20)
         return JsonResponse({
             'success': True,
-            'results': [_serialize_worker_avail(w) for w in page_obj.object_list],
+            'results': [_serialize_worker_avail(w, request) for w in page_obj.object_list],
             'page': page_obj.number,
             'num_pages': paginator.num_pages
         })
@@ -413,21 +449,28 @@ def workers_view(request):
                 u = UserAccount.objects.get(email=email)
             except UserAccount.DoesNotExist:
                 return _json_error('Account not found', 404)
+
             if u.role != 'worker':
                 return _json_error('Only workers can create availability')
 
             if not job_type or not price_raw or not district or not place or not time_info:
                 return _json_error('job_type, price, district, place, time_info required')
+
             try:
                 price = Decimal(price_raw)
             except InvalidOperation:
                 return _json_error('Invalid price')
 
             w = WorkerAvailability.objects.create(
-                posted_by=u, job_type=job_type[:120], price=price, district=district[:60],
-                place=place[:120], time_info=time_info[:60], description=description
+                posted_by=u,
+                job_type=job_type[:120],
+                price=price,
+                district=district[:60],
+                place=place[:120],
+                time_info=time_info[:60],
+                description=description,
             )
-            return JsonResponse({'success': True, 'worker': _serialize_worker_avail(w)})
+            return JsonResponse({'success': True, 'worker': _serialize_worker_avail(w, request)})
         except Exception as e:
             return _json_error(f'Error: {e}')
 
