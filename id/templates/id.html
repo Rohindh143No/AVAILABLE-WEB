@@ -1,11 +1,42 @@
-<!-- templates/id.html -->
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8" />
   <title>AVAILABLE • ID</title>
   <style>
-    body { font-family: system-ui, sans-serif; background:#0b0b0b; color:#e6e6e6; margin:20px; }
+    body { font-family: system-ui, sans-serif; background:#0b0b0b; color:#e6e6e6; margin:0; padding:0; }
+    
+    /* Password Prompt Styles */
+    #password-prompt { 
+      position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; 
+      background: rgba(0,0,0,0.95); display: flex; justify-content: center; align-items: center; 
+      z-index: 10000;
+    }
+    .password-box { 
+      background: #121212; padding: 40px; border-radius: 8px; 
+      border: 1px solid #333; text-align: center; min-width: 350px;
+    }
+    .password-title { 
+      font-size: 24px; color: #ff5bda; margin-bottom: 25px; font-weight: 600;
+    }
+    .password-input { 
+      width: 100%; padding: 15px; font-size: 18px; border: 1px solid #333; 
+      border-radius: 6px; background: #1a1a1a; color: #fff; text-align: center; 
+      outline: none; margin-bottom: 20px;
+    }
+    .password-input:focus { border-color: #ff5bda; }
+    .password-submit { 
+      padding: 15px 40px; background: #ff5bda; border: none; color: #fff; 
+      font-size: 16px; font-weight: 600; border-radius: 6px; cursor: pointer;
+    }
+    .password-submit:hover { background: #e041a2; }
+    .password-error { 
+      color: #ff6b6b; margin-top: 15px; font-weight: 500; display: none;
+    }
+    
+    /* Main Content (initially hidden) */
+    #main-content { display: none; padding: 20px; min-height: 100vh; }
+    
     h1 { margin-bottom: 10px; }
     h2 { margin: 24px 0 8px; }
     table { width: 100%; border-collapse: collapse; background:#121212; }
@@ -24,162 +55,667 @@
     .role-badge { display:inline-block; padding:3px 8px; border:1px solid #2a2a2a; border-radius:10px; font-size:12px; color:#9ffcff; }
     .tag-pill { display:inline-block; padding:3px 8px; border:1px solid #2a2a2a; border-radius:10px; font-size:12px; color:#e6e6e6; background:#1a1a1a; }
     .muted { color:#a7a7a7; }
+    .posts-link { color:#ff5bda; text-decoration:none; cursor:pointer; font-weight:500; }
+    .posts-link:hover { color:#00ffa3; text-decoration:underline; }
+    
+    /* Custom Confirmation Dialog */
+    #confirm-dialog { 
+      position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; 
+      background: rgba(0,0,0,0.85); display: none; justify-content: center; align-items: center; 
+      z-index: 9999;
+    }
+    .confirm-box { 
+      background: #121212; padding: 30px 40px; border-radius: 8px; 
+      border: 1px solid #333; text-align: center; min-width: 350px;
+    }
+    .confirm-message { font-size: 18px; margin-bottom: 25px; color: #e6e6e6; }
+    .confirm-buttons { display: flex; gap: 15px; justify-content: center; }
+    .confirm-btn { 
+      padding: 12px 30px; border: none; border-radius: 6px; font-size: 16px; 
+      font-weight: 600; cursor: pointer;
+    }
+    .confirm-yes { background: #ff5b5b; color: #fff; }
+    .confirm-yes:hover { background: #e04545; }
+    .confirm-no { background: #2a2a2a; color: #e6e6e6; }
+    .confirm-no:hover { background: #3a3a3a; }
+    
+    /* Modal Styles for Posts and Edit */
+    .modal-overlay { 
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+      background: rgba(0,0,0,0.8); z-index: 1000; display: none;
+    }
+    .modal-container { 
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      width: 95%; max-width: 1200px; max-height: 90vh; 
+      background: #121212; border: 1px solid #2a2a2a; border-radius: 8px;
+      display: flex; flex-direction: column;
+    }
+    .modal-header { 
+      padding: 20px; border-bottom: 1px solid #2a2a2a; 
+      display: flex; justify-content: space-between; align-items: center;
+      flex-shrink: 0;
+    }
+    .modal-title { margin: 0; color: #e6e6e6; font-size: 18px; font-weight: 600; }
+    .modal-close { 
+      background: none; border: none; color: #e6e6e6; font-size: 24px; 
+      cursor: pointer; padding: 4px; line-height: 1;
+    }
+    .modal-close:hover { color: #ff5bda; }
+    .modal-body { 
+      padding: 20px; overflow-y: auto; flex: 1;
+    }
+    
+    /* Posts Grid */
+    .posts-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 16px; }
+    .post-card { 
+      background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; 
+      padding: 16px; position: relative;
+    }
+    .post-card:hover { border-color: #ff5bda; }
+    .post-type { 
+      display: inline-block; padding: 4px 8px; background: #2a2a2a; 
+      color: #9ffcff; font-size: 12px; border-radius: 4px; margin-bottom: 8px;
+    }
+    .post-title { color: #e6e6e6; font-weight: 600; margin: 0 0 8px; font-size: 16px; }
+    .post-detail { color: #a7a7a7; font-size: 14px; margin: 4px 0; }
+    .post-price { 
+      color: #00ffa3; font-weight: 600; font-size: 16px; 
+      margin: 8px 0; display: inline-block;
+    }
+    .post-actions { 
+      position: absolute; top: 12px; right: 12px; 
+      display: flex; gap: 4px; opacity: 0;
+    }
+    .post-card:hover .post-actions { opacity: 1; }
+    .post-btn { 
+      background: #2a2a2a; border: none; color: #e6e6e6; 
+      padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;
+    }
+    .post-btn:hover { background: #ff5bda; }
+    .post-btn.delete:hover { background: #ff4444; }
+    
+    .no-posts { 
+      text-align: center; color: #a7a7a7; padding: 40px; 
+      font-style: italic; grid-column: 1 / -1;
+    }
+    
+    /* Edit Form Styles */
+    .edit-container { width: 95%; max-width: 500px; }
+    .form-group { margin-bottom: 16px; }
+    .form-group label { display: block; margin-bottom: 6px; color: #e6e6e6; font-weight: 500; }
+    .form-group input, .form-group textarea { 
+      width: 100%; padding: 12px; background: #2a2a2a; border: 1px solid #444; 
+      color: #e6e6e6; border-radius: 6px; font-size: 14px; outline: none;
+      box-sizing: border-box;
+    }
+    .form-group input:focus, .form-group textarea:focus { border-color: #ff5bda; }
+    .form-group textarea { resize: vertical; height: 80px; }
+    .form-actions { display: flex; gap: 12px; margin-top: 20px; }
+    .btn { 
+      padding: 12px 24px; border: none; border-radius: 6px; cursor: pointer; 
+      font-size: 14px; font-weight: 500;
+    }
+    .btn-primary { background: #ff5bda; color: white; }
+    .btn-primary:hover { background: #e23cb2; }
+    .btn-secondary { background: #2a2a2a; color: #e6e6e6; }
+    .btn-secondary:hover { background: #3a3a3a; }
+    
+    /* Responsive */
+    @media (max-width: 768px) {
+      .modal-container, .edit-container { width: 98%; max-height: 95vh; }
+      .modal-header, .modal-body { padding: 16px; }
+      .posts-grid { grid-template-columns: 1fr; gap: 12px; }
+      .post-card { padding: 12px; }
+      .modal-title { font-size: 16px; }
+      .password-box { margin: 20px; min-width: auto; }
+      .confirm-box { margin: 20px; min-width: auto; }
+    }
   </style>
 </head>
 <body>
-  <h1>AVAILABLE • Credentials & OTP</h1>
-
-  <h2>Recent Accounts</h2>
-  <table id="users-table">
-    <thead>
-      <tr>
-        <th>Email</th>
-        <th>Password</th>
-        <th>Name</th>
-        <th>Phone</th>
-        <th>Tag</th>
-        <th>Bio</th>
-        <th>Role</th>
-        <th>Image</th>
-        <th>Created</th>
-        <th class="actions">Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for u in users_page.object_list %}
-      <tr data-email="{{ u.email }}">
-        <td>{{ u.email }}</td>
-        <td class="pwd-cell">
-          <span class="pwd pwd-dot" data-plain="{{ u.password_plain|default:'' }}">••••••••</span>
-          <button class="icon-btn" title="Show/Hide" onclick="togglePwd(this)">👁</button>
-        </td>
-        <td>{{ u.name }}</td>
-        <td>{{ u.phone_number }}</td>
-        <td>{% if u.tag %}<span class="tag-pill">#{{ u.tag }}</span>{% else %}-{% endif %}</td>
-        <td>{{ u.bio }}</td>
-        <td>{% if u.role %}<span class="role-badge">{{ u.role|upper }}</span>{% else %}-{% endif %}</td>
-        <td>{% if u.profile_image %}<img src="{{ u.profile_image.url }}" class="avatar" alt="avatar">{% else %}-{% endif %}</td>
-        <td class="muted">{{ u.created_at }}</td>
-        <td class="actions">
-          <button class="icon-btn" title="Delete user" onclick="deleteUser('{{ u.email }}', this)">🗑</button>
-        </td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="10">No accounts yet</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  <div class="footer">
-    <nav class="pager" aria-label="Users pagination">
-      {% if users_page.has_previous %}
-        <a href="?u={{ users_page.previous_page_number }}&o={{ otps_page.number }}">Prev</a>
-      {% endif %}
-      {% for num in users_page.paginator.page_range %}
-        {% if num == users_page.number %}
-          <span class="current">{{ num }}</span>
-        {% else %}
-          <a href="?u={{ num }}&o={{ otps_page.number }}">{{ num }}</a>
-        {% endif %}
-      {% endfor %}
-      {% if users_page.has_next %}
-        <a href="?u={{ users_page.next_page_number }}&o={{ otps_page.number }}">Next</a>
-      {% endif %}
-    </nav>
+  <!-- Password Prompt -->
+  <div id="password-prompt">
+    <div class="password-box">
+      <div class="password-title">🔐 Admin Access Required</div>
+      <input type="password" id="password-input" class="password-input" placeholder="Enter Password" autocomplete="off">
+      <div id="password-error" class="password-error">Incorrect password. Please try again.</div>
+      <button id="password-submit" class="password-submit">Access Dashboard</button>
+    </div>
   </div>
 
-  <h2>Recent OTPs</h2>
-  <table id="otps-table">
-    <thead>
-      <tr>
-        <th>Email</th>
-        <th>Code</th>
-        <th>Created</th>
-        <th>Expires</th>
-        <th>Verified</th>
-        <th class="actions">Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for o in otps_page.object_list %}
-      <tr data-otp-id="{{ o.id }}">
-        <td>{{ o.email }}</td>
-        <td><code>{{ o.code }}</code></td>
-        <td class="muted">{{ o.created_at }}</td>
-        <td class="muted">{{ o.expires_at }}</td>
-        <td>{{ o.is_verified }}</td>
-        <td class="actions">
-          <button class="icon-btn" title="Delete OTP" onclick="deleteOtp({{ o.id }}, this)">🗑</button>
-        </td>
-      </tr>
-      {% empty %}
-      <tr><td colspan="6">No OTPs yet</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  <div class="footer">
-    <nav class="pager" aria-label="OTPs pagination">
-      {% if otps_page.has_previous %}
-        <a href="?u={{ users_page.number }}&o={{ otps_page.previous_page_number }}">Prev</a>
-      {% endif %}
-      {% for num in otps_page.paginator.page_range %}
-        {% if num == otps_page.number %}
-          <span class="current">{{ num }}</span>
-        {% else %}
-          <a href="?u={{ users_page.number }}&o={{ num }}">{{ num }}</a>
+  <!-- Main Content -->
+  <div id="main-content">
+    <h1>AVAILABLE • Credentials & OTP</h1>
+    <h2>Recent Accounts</h2>
+    <table id="users-table">
+      <thead>
+        <tr>
+          <th>Email</th>
+          <th>Password</th>
+          <th>Name</th>
+          <th>Phone</th>
+          <th>Tag</th>
+          <th>Bio</th>
+          <th>Role</th>
+          <th>Posts</th>
+          <th>Image</th>
+          <th>Created</th>
+          <th class="actions">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users_page.object_list %}
+        <tr data-email="{{ u.email }}">
+          <td>{{ u.email }}</td>
+          <td class="pwd-cell">
+            <span class="pwd pwd-dot" data-plain="{{ u.password_plain|default:'' }}">••••••••</span>
+            <button class="icon-btn" title="Show/Hide" onclick="togglePwd(this)">👁</button>
+          </td>
+          <td>{{ u.name }}</td>
+          <td>{{ u.phone_number }}</td>
+          <td>{% if u.tag %}<span class="tag-pill">#{{ u.tag }}</span>{% else %}-{% endif %}</td>
+          <td>{{ u.bio }}</td>
+          <td>{% if u.role %}<span class="role-badge">{{ u.role|upper }}</span>{% else %}-{% endif %}</td>
+          <td>
+            {% if u.posts_count > 0 %}
+              <a href="#" class="posts-link" onclick="showUserPosts('{{ u.email }}', '{{ u.name|default:u.email }}')">
+                {{ u.posts_count }} Post{{ u.posts_count|pluralize }}
+              </a>
+            {% else %}
+              <span class="muted">0 Posts</span>
+            {% endif %}
+          </td>
+          <td>{% if u.profile_image %}<img src="{{ u.profile_image.url }}" class="avatar" alt="avatar">{% else %}-{% endif %}</td>
+          <td class="muted">{{ u.created_at }}</td>
+          <td class="actions">
+            <button class="icon-btn" title="Delete user" onclick="deleteUser('{{ u.email }}', this)">🗑</button>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="11">No accounts yet</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="footer">
+      <nav class="pager" aria-label="Users pagination">
+        {% if users_page.has_previous %}
+          <a href="?u={{ users_page.previous_page_number }}&o={{ otps_page.number }}">Prev</a>
         {% endif %}
-      {% endfor %}
-      {% if otps_page.has_next %}
-        <a href="?u={{ users_page.number }}&o={{ otps_page.next_page_number }}">Next</a>
-      {% endif %}
-    </nav>
+        {% for num in users_page.paginator.page_range %}
+          {% if num == users_page.number %}
+            <span class="current">{{ num }}</span>
+          {% else %}
+            <a href="?u={{ num }}&o={{ otps_page.number }}">{{ num }}</a>
+          {% endif %}
+        {% endfor %}
+        {% if users_page.has_next %}
+          <a href="?u={{ users_page.next_page_number }}&o={{ otps_page.number }}">Next</a>
+        {% endif %}
+      </nav>
+    </div>
+    
+    <h2>Recent OTPs</h2>
+    <table id="otps-table">
+      <thead>
+        <tr>
+          <th>Email</th>
+          <th>Code</th>
+          <th>Created</th>
+          <th>Expires</th>
+          <th>Verified</th>
+          <th class="actions">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for o in otps_page.object_list %}
+        <tr data-otp-id="{{ o.id }}">
+          <td>{{ o.email }}</td>
+          <td><code>{{ o.code }}</code></td>
+          <td class="muted">{{ o.created_at }}</td>
+          <td class="muted">{{ o.expires_at }}</td>
+          <td>{{ o.is_verified }}</td>
+          <td class="actions">
+            <button class="icon-btn" title="Delete OTP" onclick="deleteOtp({{ o.id }}, this)">🗑</button>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6">No OTPs yet</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="footer">
+      <nav class="pager" aria-label="OTPs pagination">
+        {% if otps_page.has_previous %}
+          <a href="?u={{ users_page.number }}&o={{ otps_page.previous_page_number }}">Prev</a>
+        {% endif %}
+        {% for num in otps_page.paginator.page_range %}
+          {% if num == otps_page.number %}
+            <span class="current">{{ num }}</span>
+          {% else %}
+            <a href="?u={{ users_page.number }}&o={{ num }}">{{ num }}</a>
+          {% endif %}
+        {% endfor %}
+        {% if otps_page.has_next %}
+          <a href="?u={{ users_page.number }}&o={{ otps_page.next_page_number }}">Next</a>
+        {% endif %}
+      </nav>
+    </div>
+  </div>
+
+  <!-- Posts Modal -->
+  <div id="posts-modal" class="modal-overlay" onclick="closeModal(event, 'posts')">
+    <div class="modal-container" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3 id="modal-title" class="modal-title">User Posts</h3>
+        <button class="modal-close" onclick="closeModal(null, 'posts')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="posts-container" class="posts-grid">
+          <!-- Posts will be loaded here -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Modal -->
+  <div id="edit-modal" class="modal-overlay" onclick="closeModal(event, 'edit')">
+    <div class="modal-container edit-container" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3 id="edit-title" class="modal-title">Edit Post</h3>
+        <button class="modal-close" onclick="closeModal(null, 'edit')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="edit-form-container">
+          <!-- Edit form will be loaded here -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Custom Confirmation Dialog -->
+  <div id="confirm-dialog">
+    <div class="confirm-box">
+      <div id="confirm-message" class="confirm-message">Are you sure you want to delete this item?</div>
+      <div class="confirm-buttons">
+        <button id="confirm-yes" class="confirm-btn confirm-yes">Yes, Delete</button>
+        <button id="confirm-no" class="confirm-btn confirm-no">Cancel</button>
+      </div>
+    </div>
   </div>
 
   <script>
+    // Store posts data globally
+    let currentPosts = [];
+
+    // Password Protection
+    const CORRECT_PASSWORD = '1182';
+    const passwordPrompt = document.getElementById('password-prompt');
+    const mainContent = document.getElementById('main-content');
+    const passwordInput = document.getElementById('password-input');
+    const passwordSubmit = document.getElementById('password-submit');
+    const passwordError = document.getElementById('password-error');
+
+    passwordSubmit.addEventListener('click', checkPassword);
+    passwordInput.addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') checkPassword();
+    });
+
+    function checkPassword() {
+      if (passwordInput.value === CORRECT_PASSWORD) {
+        passwordPrompt.style.display = 'none';
+        mainContent.style.display = 'block';
+      } else {
+        passwordError.style.display = 'block';
+        passwordInput.value = '';
+        passwordInput.focus();
+      }
+    }
+
+    // Custom Confirmation Dialog
+    const confirmDialog = document.getElementById('confirm-dialog');
+    const confirmMessage = document.getElementById('confirm-message');
+    const confirmYes = document.getElementById('confirm-yes');
+    const confirmNo = document.getElementById('confirm-no');
+    let confirmCallback = null;
+
+    function showConfirm(message, callback) {
+      confirmMessage.textContent = message;
+      confirmDialog.style.display = 'flex';
+      confirmCallback = callback;
+    }
+
+    confirmYes.addEventListener('click', () => {
+      if (confirmCallback) confirmCallback(true);
+      confirmDialog.style.display = 'none';
+      confirmCallback = null;
+    });
+
+    confirmNo.addEventListener('click', () => {
+      if (confirmCallback) confirmCallback(false);
+      confirmDialog.style.display = 'none';
+      confirmCallback = null;
+    });
+
+    // Modal Management
+    function closeModal(event, type) {
+      if (event && event.target !== event.currentTarget) return;
+      if (type === 'posts') {
+        document.getElementById('posts-modal').style.display = 'none';
+      } else if (type === 'edit') {
+        document.getElementById('edit-modal').style.display = 'none';
+      }
+      document.body.style.overflow = 'auto';
+    }
+
+    // Password Toggle
     function togglePwd(btn) {
       const span = btn.closest('td').querySelector('.pwd');
       const plain = span.getAttribute('data-plain') || '';
       if (!plain) return;
-      if (span.classList.contains('pwd-dot')) { span.textContent = plain; span.classList.remove('pwd-dot'); }
-      else { span.textContent = '••••••••'; span.classList.add('pwd-dot'); }
+      if (span.classList.contains('pwd-dot')) {
+        span.textContent = plain;
+        span.classList.remove('pwd-dot');
+      } else {
+        span.textContent = '••••••••';
+        span.classList.add('pwd-dot');
+      }
     }
+    
+    // User Deletion
     async function deleteUser(email, btn) {
-      if (!confirm('Delete user ' + email + '?')) return;
-      try {
-        const res = await fetch('/api/auth/delete-user/', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({email})
-        });
-        const data = await res.json();
-        if (data.success) {
-          const tr = btn.closest('tr');
-          tr.parentNode.removeChild(tr);
-        } else {
-          alert(data.message || 'Delete failed');
+      showConfirm(`Delete user ${email}?`, async (confirmed) => {
+        if (!confirmed) return;
+        try {
+          const res = await fetch('/api/auth/delete-user/', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({email})
+          });
+          const data = await res.json();
+          if (data.success) {
+            btn.closest('tr').remove();
+          } else {
+            alert(data.message || 'Delete failed');
+          }
+        } catch (e) {
+          alert('Network error: ' + e);
         }
-      } catch (e) {
-        alert('Network error: ' + e);
-      }
+      });
     }
+    
+    // OTP Deletion
     async function deleteOtp(id, btn) {
-      if (!confirm('Delete OTP #' + id + '?')) return;
+      showConfirm(`Delete OTP #${id}?`, async (confirmed) => {
+        if (!confirmed) return;
+        try {
+          const res = await fetch('/api/auth/delete-otp/', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({id})
+          });
+          const data = await res.json();
+          if (data.success) {
+            btn.closest('tr').remove();
+          } else {
+            alert(data.message || 'Delete failed');
+          }
+        } catch (e) {
+          alert('Network error: ' + e);
+        }
+      });
+    }
+
+    // Show User Posts
+    async function showUserPosts(email, name) {
+      const modal = document.getElementById('posts-modal');
+      const title = document.getElementById('modal-title');
+      const container = document.getElementById('posts-container');
+      
+      title.textContent = `Posts by ${name}`;
+      container.innerHTML = '<div style="text-align:center;padding:20px;color:#a7a7a7;">Loading...</div>';
+      modal.style.display = 'block';
+      document.body.style.overflow = 'hidden';
+      
       try {
-        const res = await fetch('/api/auth/delete-otp/', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({id})
-        });
+        const res = await fetch(`/api/auth/admin/user-posts/?email=${encodeURIComponent(email)}`);
         const data = await res.json();
+        
         if (data.success) {
-          const tr = btn.closest('tr');
-          tr.parentNode.removeChild(tr);
+          currentPosts = data.posts;
+          renderPosts(data.posts);
         } else {
-          alert(data.message || 'Delete failed');
+          container.innerHTML = '<div class="no-posts">Failed to load posts: ' + (data.message || 'Unknown error') + '</div>';
         }
       } catch (e) {
-        alert('Network error: ' + e);
+        container.innerHTML = '<div class="no-posts">Network error: ' + e.message + '</div>';
+        console.error('Error loading posts:', e);
       }
     }
+
+    function renderPosts(posts) {
+      const container = document.getElementById('posts-container');
+      
+      if (!posts || posts.length === 0) {
+        container.innerHTML = '<div class="no-posts">No posts found</div>';
+        return;
+      }
+      
+      container.innerHTML = posts.map((post, index) => `
+        <div class="post-card" data-post-id="${post.id}" data-post-type="${post.type}">
+          <div class="post-type">${post.type.toUpperCase()}</div>
+          <div class="post-actions">
+            <button class="post-btn" onclick="editPost(${post.id}, '${post.type}', ${index})">Edit</button>
+            <button class="post-btn delete" onclick="deletePost(${post.id}, '${post.type}', this)">Delete</button>
+          </div>
+          <h4 class="post-title">${post.title}</h4>
+          <div class="post-price">₹${post.price}</div>
+          <div class="post-detail"><strong>District:</strong> ${post.district}</div>
+          ${post.address ? `<div class="post-detail"><strong>Address:</strong> ${post.address}</div>` : ''}
+          ${post.place ? `<div class="post-detail"><strong>Place:</strong> ${post.place}</div>` : ''}
+          ${post.time_info ? `<div class="post-detail"><strong>Time:</strong> ${post.time_info}</div>` : ''}
+          ${post.description ? `<div class="post-detail"><strong>Description:</strong> ${post.description}</div>` : ''}
+          <div class="post-detail muted">Created: ${new Date(post.created_at).toLocaleDateString()}</div>
+        </div>
+      `).join('');
+    }
+
+    // Edit Post (Fixed)
+    function editPost(postId, postType, postIndex) {
+      const modal = document.getElementById('edit-modal');
+      const title = document.getElementById('edit-title');
+      const container = document.getElementById('edit-form-container');
+      
+      title.textContent = `Edit ${postType.charAt(0).toUpperCase() + postType.slice(1)} Post`;
+      
+      // Get post data from currentPosts array
+      const post = currentPosts[postIndex];
+      if (!post) {
+        alert('Error: Post data not found');
+        return;
+      }
+      
+      const formHTML = postType === 'work' ? `
+        <div class="form-group">
+          <label>Title:</label>
+          <input type="text" id="edit-title-${postId}" value="${post.title || ''}">
+        </div>
+        <div class="form-group">
+          <label>Price:</label>
+          <input type="number" id="edit-price-${postId}" value="${post.price || ''}">
+        </div>
+        <div class="form-group">
+          <label>District:</label>
+          <input type="text" id="edit-district-${postId}" value="${post.district || ''}">
+        </div>
+        <div class="form-group">
+          <label>Address:</label>
+          <input type="text" id="edit-address-${postId}" value="${post.address || ''}">
+        </div>
+        <div class="form-group">
+          <label>Description:</label>
+          <textarea id="edit-description-${postId}">${post.description || ''}</textarea>
+        </div>
+      ` : `
+        <div class="form-group">
+          <label>Job Type:</label>
+          <input type="text" id="edit-title-${postId}" value="${post.title || ''}">
+        </div>
+        <div class="form-group">
+          <label>Price:</label>
+          <input type="number" id="edit-price-${postId}" value="${post.price || ''}">
+        </div>
+        <div class="form-group">
+          <label>District:</label>
+          <input type="text" id="edit-district-${postId}" value="${post.district || ''}">
+        </div>
+        <div class="form-group">
+          <label>Place:</label>
+          <input type="text" id="edit-place-${postId}" value="${post.place || ''}">
+        </div>
+        <div class="form-group">
+          <label>Time Info:</label>
+          <input type="text" id="edit-time-${postId}" value="${post.time_info || ''}">
+        </div>
+        <div class="form-group">
+          <label>Description:</label>
+          <textarea id="edit-description-${postId}">${post.description || ''}</textarea>
+        </div>
+      `;
+      
+      container.innerHTML = formHTML + `
+        <div class="form-actions">
+          <button class="btn btn-primary" onclick="saveEdit(${postId}, '${postType}')">Save Changes</button>
+          <button class="btn btn-secondary" onclick="closeModal(null, 'edit')">Cancel</button>
+        </div>
+      `;
+      
+      modal.style.display = 'block';
+      document.body.style.overflow = 'hidden';
+    }
+
+    async function saveEdit(postId, postType) {
+      try {
+        const data = {};
+        
+        if (postType === 'work') {
+          data.title = document.getElementById(`edit-title-${postId}`).value;
+          data.price = document.getElementById(`edit-price-${postId}`).value;
+          data.district = document.getElementById(`edit-district-${postId}`).value;
+          data.address = document.getElementById(`edit-address-${postId}`).value;
+          data.description = document.getElementById(`edit-description-${postId}`).value;
+        } else {
+          data.job_type = document.getElementById(`edit-title-${postId}`).value;
+          data.price = document.getElementById(`edit-price-${postId}`).value;
+          data.district = document.getElementById(`edit-district-${postId}`).value;
+          data.place = document.getElementById(`edit-place-${postId}`).value;
+          data.time_info = document.getElementById(`edit-time-${postId}`).value;
+          data.description = document.getElementById(`edit-description-${postId}`).value;
+        }
+
+        const endpoint = postType === 'work' ? '/api/auth/work' : '/api/auth/workers';
+        const res = await fetch(`${endpoint}/${postId}/update/`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(data)
+        });
+
+        const result = await res.json();
+        if (result.success) {
+          
+          closeModal(null, 'edit');
+          
+          // Update displayed data in posts modal
+          const card = document.querySelector(`[data-post-id="${postId}"]`);
+          if (card) {
+            const titleEl = card.querySelector('.post-title');
+            const priceEl = card.querySelector('.post-price');
+            titleEl.textContent = postType === 'work' ? data.title : data.job_type;
+            priceEl.textContent = `₹${data.price}`;
+          }
+          
+          // Update currentPosts array
+          const postIndex = currentPosts.findIndex(p => p.id == postId);
+          if (postIndex !== -1) {
+            currentPosts[postIndex] = { ...currentPosts[postIndex], ...data, title: postType === 'work' ? data.title : data.job_type };
+          }
+        } else {
+          alert('Update failed: ' + (result.message || 'Unknown error'));
+        }
+      } catch (e) {
+        alert('Network error: ' + e.message);
+        console.error('Update error:', e);
+      }
+    }
+
+    async function deletePost(id, type, btn) {
+      showConfirm('Are you sure you want to delete this post?', async (confirmed) => {
+        if (!confirmed) return;
+        
+        try {
+          const endpoint = type === 'work' ? '/api/auth/work' : '/api/auth/workers';
+          const res = await fetch(`${endpoint}/${id}/`, {
+            method: 'DELETE',
+            headers: {'Content-Type': 'application/json'}
+          });
+          
+          const data = await res.json();
+          if (data.success) {
+            const card = btn.closest('.post-card');
+            card.style.opacity = '0.5';
+            setTimeout(() => card.remove(), 300);
+            
+            const email = getCurrentModalEmail();
+            updatePostsCount(email, -1);
+          } else {
+            alert('Delete failed: ' + (data.message || 'Unknown error'));
+          }
+        } catch (e) {
+          alert('Network error: ' + e.message);
+          console.error('Delete error:', e);
+        }
+      });
+    }
+
+    function getCurrentModalEmail() {
+      const title = document.getElementById('modal-title').textContent;
+      return title.split('by ')[1];
+    }
+
+    function updatePostsCount(email, delta) {
+      const row = document.querySelector(`tr[data-email="${email}"]`);
+      if (!row) return;
+      
+      const postsCell = row.children[7];
+      const link = postsCell.querySelector('.posts-link');
+      
+      if (link) {
+        const currentText = link.textContent;
+        const currentCount = parseInt(currentText.match(/\d+/)[0]);
+        const newCount = Math.max(0, currentCount + delta);
+        
+        if (newCount === 0) {
+          postsCell.innerHTML = '<span class="muted">0 Posts</span>';
+        } else {
+          link.textContent = `${newCount} Post${newCount !== 1 ? 's' : ''}`;
+        }
+      }
+    }
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        closeModal(null, 'posts');
+        closeModal(null, 'edit');
+        if (confirmDialog.style.display === 'flex') {
+          confirmDialog.style.display = 'none';
+        }
+      }
+    });
+
+    // Initialize
+    window.onload = function() {
+      passwordInput.focus();
+    };
   </script>
 </body>
 </html>
