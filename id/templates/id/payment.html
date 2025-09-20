@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Dashboard - AVAILABLE</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            font-weight: 300;
+        }
+        
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            padding: 30px;
+            background: #f8f9fa;
+        }
+        
+        .stat-card {
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
+            text-align: center;
+            transition: transform 0.3s ease;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .stat-number {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        
+        .stat-label {
+            color: #7f8c8d;
+            font-size: 1rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .content {
+            padding: 30px;
+        }
+        
+        .section-title {
+            font-size: 1.8rem;
+            color: #2c3e50;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid #3498db;
+            display: inline-block;
+        }
+        
+        .filters {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+        
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        
+        .filter-group label {
+            font-weight: 600;
+            color: #2c3e50;
+            font-size: 0.9rem;
+        }
+        
+        .filter-group select,
+        .filter-group input {
+            padding: 10px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.3s ease;
+        }
+        
+        .filter-group select:focus,
+        .filter-group input:focus {
+            outline: none;
+            border-color: #3498db;
+        }
+        
+        .table-container {
+            background: white;
+            border-radius: 15px;
+            overflow: hidden;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
+            margin-bottom: 30px;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        th {
+            background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+            color: white;
+            padding: 20px 15px;
+            text-align: left;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 0.9rem;
+        }
+        
+        td {
+            padding: 20px 15px;
+            border-bottom: 1px solid #f0f0f0;
+            vertical-align: middle;
+        }
+        
+        tr:hover {
+            background: #f8f9fa;
+        }
+        
+        .status {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .status.completed {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status.pending {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .status.failed {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .status.refunded {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        
+        .amount {
+            font-weight: bold;
+            font-size: 1.1rem;
+        }
+        
+        .amount.positive {
+            color: #27ae60;
+        }
+        
+        .amount.negative {
+            color: #e74c3c;
+        }
+        
+        .transaction-id {
+            font-family: 'Courier New', monospace;
+            background: #f8f9fa;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 0.9rem;
+        }
+        
+        .pagination {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 30px;
+        }
+        
+        .pagination button {
+            padding: 10px 20px;
+            border: 2px solid #3498db;
+            background: white;
+            color: #3498db;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+        }
+        
+        .pagination button:hover {
+            background: #3498db;
+            color: white;
+        }
+        
+        .pagination button.active {
+            background: #3498db;
+            color: white;
+        }
+        
+        .pagination button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .refresh-btn {
+            background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 1rem;
+            transition: transform 0.3s ease;
+            margin-bottom: 20px;
+        }
+        
+        .refresh-btn:hover {
+            transform: translateY(-2px);
+        }
+        
+        .no-data {
+            text-align: center;
+            padding: 50px;
+            color: #7f8c8d;
+            font-size: 1.2rem;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 50px;
+            color: #3498db;
+            font-size: 1.2rem;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                margin: 10px;
+                border-radius: 15px;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .stats-grid {
+                grid-template-columns: 1fr;
+                padding: 20px;
+            }
+            
+            .filters {
+                flex-direction: column;
+            }
+            
+            .table-container {
+                overflow-x: auto;
+            }
+            
+            table {
+                min-width: 800px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>💰 Payment Dashboard</h1>
+            <p>Complete payment analytics and transaction management</p>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-number" id="totalTransactions">-</div>
+                <div class="stat-label">Total Transactions</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="totalAmount">₹0</div>
+                <div class="stat-label">Total Amount</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="completedPayments">-</div>
+                <div class="stat-label">Completed</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="pendingPayments">-</div>
+                <div class="stat-label">Pending</div>
+            </div>
+        </div>
+        
+        <div class="content">
+            <button class="refresh-btn" onclick="loadPaymentData()">🔄 Refresh Data</button>
+            
+            <h2 class="section-title">All Transactions</h2>
+            
+            <div class="filters">
+                <div class="filter-group">
+                    <label for="statusFilter">Status</label>
+                    <select id="statusFilter" onchange="filterTransactions()">
+                        <option value="">All Status</option>
+                        <option value="completed">Completed</option>
+                        <option value="pending">Pending</option>
+                        <option value="failed">Failed</option>
+                        <option value="refunded">Refunded</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="typeFilter">Payment Type</label>
+                    <select id="typeFilter" onchange="filterTransactions()">
+                        <option value="">All Types</option>
+                        <option value="owner_booking">Owner Booking Worker</option>
+                        <option value="worker_booking">Worker Booking Job</option>
+                        <option value="advance">Advance Payment</option>
+                        <option value="full">Full Payment</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="relationshipFilter">Booking Type</label>
+                    <select id="relationshipFilter" onchange="filterTransactions()">
+                        <option value="">All Relationships</option>
+                        <option value="owner_booking">Owner → Worker</option>
+                        <option value="worker_booking">Worker → Owner</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="searchInput">Search</label>
+                    <input type="text" id="searchInput" placeholder="Transaction ID, Email, Job Title..." onkeyup="filterTransactions()">
+                </div>
+            </div>
+            
+            <div class="table-container">
+                <div id="loadingIndicator" class="loading">Loading payment data...</div>
+                <table id="paymentsTable" style="display: none;">
+                    <thead>
+                        <tr>
+                            <th>Transaction ID</th>
+                            <th>Booking Relationship</th>
+                            <th>Amount</th>
+                            <th>Type</th>
+                            <th>Status</th>
+                            <th>Job Details</th>
+                            <th>Date</th>
+                            <th>Razorpay ID</th>
+                        </tr>
+                    </thead>
+                    <tbody id="paymentsTableBody">
+                    </tbody>
+                </table>
+                <div id="noDataMessage" class="no-data" style="display: none;">
+                    No payment data found.
+                </div>
+            </div>
+            
+            <div class="pagination" id="pagination" style="display: none;">
+                <button onclick="changePage(-1)" id="prevBtn">← Previous</button>
+                <span id="pageInfo">Page 1 of 1</span>
+                <button onclick="changePage(1)" id="nextBtn">Next →</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let allPayments = [];
+        let filteredPayments = [];
+        let currentPage = 1;
+        const itemsPerPage = 20;
+
+        async function loadPaymentData() {
+            try {
+                document.getElementById('loadingIndicator').style.display = 'block';
+                document.getElementById('paymentsTable').style.display = 'none';
+                document.getElementById('noDataMessage').style.display = 'none';
+                
+                const response = await fetch('/api/auth/payment/dashboard/');
+                const data = await response.json();
+                
+                if (data.success) {
+                    allPayments = data.payments;
+                    filteredPayments = [...allPayments];
+                    updateStats(data.stats);
+                    displayPayments();
+                } else {
+                    showNoData();
+                }
+            } catch (error) {
+                console.error('Error loading payment data:', error);
+                showNoData();
+            } finally {
+                document.getElementById('loadingIndicator').style.display = 'none';
+            }
+        }
+
+        function updateStats(stats) {
+            document.getElementById('totalTransactions').textContent = stats.total_transactions;
+            document.getElementById('totalAmount').textContent = `₹${stats.total_amount.toLocaleString()}`;
+            document.getElementById('completedPayments').textContent = stats.completed_payments;
+            document.getElementById('pendingPayments').textContent = stats.pending_payments;
+        }
+
+        function displayPayments() {
+            const tbody = document.getElementById('paymentsTableBody');
+            tbody.innerHTML = '';
+            
+            if (filteredPayments.length === 0) {
+                showNoData();
+                return;
+            }
+            
+            const startIndex = (currentPage - 1) * itemsPerPage;
+            const endIndex = startIndex + itemsPerPage;
+            const pagePayments = filteredPayments.slice(startIndex, endIndex);
+            
+            pagePayments.forEach(payment => {
+                const row = document.createElement('tr');
+                
+                // Create booking relationship display
+                const bookingInfo = `
+                    <div style="font-size: 0.9rem;">
+                        <div><strong>${payment.booker_name}</strong> → <strong>${payment.job_owner_name}</strong></div>
+                        <div style="color: #666; font-size: 0.8rem;">${payment.booking_relationship}</div>
+                        <div style="color: #999; font-size: 0.7rem;">${payment.user_email} → ${payment.job_owner_email}</div>
+                    </div>
+                `;
+                
+                // Create job details display
+                const jobInfo = `
+                    <div style="font-size: 0.9rem;">
+                        <div><strong>${payment.job_title}</strong></div>
+                        <div style="color: #666; font-size: 0.8rem;">Job ID: ${payment.job_id}</div>
+                        ${payment.job_owner_email !== 'Unknown' ? `<div style="color: #999; font-size: 0.7rem;">Owner: ${payment.job_owner_email}</div>` : ''}
+                    </div>
+                `;
+                
+                row.innerHTML = `
+                    <td><span class="transaction-id">${payment.transaction_id}</span></td>
+                    <td>${bookingInfo}</td>
+                    <td><span class="amount ${payment.status === 'refunded' ? 'negative' : 'positive'}">₹${parseFloat(payment.amount).toLocaleString()}</span></td>
+                    <td>${payment.payment_type.replace('_', ' ').toUpperCase()}</td>
+                    <td><span class="status ${payment.status}">${payment.status.toUpperCase()}</span></td>
+                    <td>${jobInfo}</td>
+                    <td>${new Date(payment.created_at).toLocaleDateString()}</td>
+                    <td>${payment.razorpay_payment_id || '-'}</td>
+                `;
+                tbody.appendChild(row);
+            });
+            
+            document.getElementById('paymentsTable').style.display = 'table';
+            updatePagination();
+        }
+
+        function showNoData() {
+            document.getElementById('paymentsTable').style.display = 'none';
+            document.getElementById('noDataMessage').style.display = 'block';
+            document.getElementById('pagination').style.display = 'none';
+        }
+
+        function filterTransactions() {
+            const statusFilter = document.getElementById('statusFilter').value;
+            const typeFilter = document.getElementById('typeFilter').value;
+            const relationshipFilter = document.getElementById('relationshipFilter').value;
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            
+            filteredPayments = allPayments.filter(payment => {
+                const matchesStatus = !statusFilter || payment.status === statusFilter;
+                const matchesType = !typeFilter || payment.payment_type === typeFilter;
+                const matchesRelationship = !relationshipFilter || payment.is_owner_booking === (relationshipFilter === 'owner_booking');
+                const matchesSearch = !searchTerm || 
+                    payment.transaction_id.toLowerCase().includes(searchTerm) ||
+                    payment.user_email.toLowerCase().includes(searchTerm) ||
+                    payment.job_id.toLowerCase().includes(searchTerm) ||
+                    payment.job_title.toLowerCase().includes(searchTerm) ||
+                    payment.job_owner_name.toLowerCase().includes(searchTerm) ||
+                    payment.booker_name.toLowerCase().includes(searchTerm);
+                
+                return matchesStatus && matchesType && matchesRelationship && matchesSearch;
+            });
+            
+            currentPage = 1;
+            displayPayments();
+        }
+
+        function changePage(direction) {
+            const totalPages = Math.ceil(filteredPayments.length / itemsPerPage);
+            const newPage = currentPage + direction;
+            
+            if (newPage >= 1 && newPage <= totalPages) {
+                currentPage = newPage;
+                displayPayments();
+            }
+        }
+
+        function updatePagination() {
+            const totalPages = Math.ceil(filteredPayments.length / itemsPerPage);
+            const pagination = document.getElementById('pagination');
+            
+            if (totalPages <= 1) {
+                pagination.style.display = 'none';
+                return;
+            }
+            
+            pagination.style.display = 'flex';
+            document.getElementById('pageInfo').textContent = `Page ${currentPage} of ${totalPages}`;
+            document.getElementById('prevBtn').disabled = currentPage === 1;
+            document.getElementById('nextBtn').disabled = currentPage === totalPages;
+        }
+
+        // Load data on page load
+        document.addEventListener('DOMContentLoaded', loadPaymentData);
+    </script>
+</body>
+</html>

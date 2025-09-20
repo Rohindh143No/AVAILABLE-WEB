@@ -11,9 +11,389 @@ from django.shortcuts import render
 from django.core.paginator import Paginator
 from django.core.files.base import ContentFile
 from django.db.models import Sum, Q
-from .models import UserAccount, EmailOTP, OwnerJobPost, WorkerAvailability
+from .models import UserAccount, EmailOTP, OwnerJobPost, WorkerAvailability, PaymentTransaction, PayoutRequest, PaymentRefund
 from .utils import generate_otp_5, expiry_in
 
+import razorpay
+import hmac
+import hashlib
+import json
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.conf import settings
+
+# Razorpay configuration - REPLACE WITH YOUR ACTUAL CREDENTIALS
+RAZORPAY_KEY_ID = 'rzp_live_RJjVAhSF0TYRxX'  # Replace with your test key
+RAZORPAY_KEY_SECRET = 'u0ToZ5Wb44xoozWM0usepuRK'  # Replace with your secret key
+
+client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+
+# RAZORPAY PAYMENT VIEWS
+@csrf_exempt
+def create_razorpay_order(request):
+    """Create a Razorpay order for payment"""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST method required'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        amount = data.get('amount')  # Amount in paise
+        job_id = data.get('job_id')
+        user_email = data.get('user_email')
+        payment_type = data.get('payment_type', 'advance')
+        currency = data.get('currency', 'INR')
+        
+        if not all([amount, job_id, user_email]):
+            return JsonResponse({
+                'success': False, 
+                'error': 'Missing required fields: amount, job_id, user_email'
+            }, status=400)
+        
+        # Generate unique transaction ID
+        transaction_id = f"TXN_{uuid.uuid4().hex[:8].upper()}"
+        
+        # Create order with Razorpay
+        order_data = {
+            'amount': int(amount),  # Razorpay expects integer
+            'currency': currency,
+            'receipt': f'job_{job_id}_{payment_type}',
+            'notes': {
+                'job_id': job_id,
+                'user_email': user_email,
+                'payment_type': payment_type,
+                'transaction_id': transaction_id
+            }
+        }
+        
+        order = client.order.create(data=order_data)
+        
+        # Create transaction record in database
+        transaction = PaymentTransaction.objects.create(
+            transaction_id=transaction_id,
+            razorpay_order_id=order['id'],
+            user_email=user_email,
+            job_id=job_id,
+            amount=Decimal(str(amount / 100)),  # Convert from paise to rupees
+            payment_type=payment_type,
+            currency=currency,
+            status='pending',
+            metadata=order_data['notes']
+        )
+        
+        return JsonResponse({
+            'success': True,
+            'order': order,
+            'transaction_id': transaction_id
+        })
+        
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': f'Order creation failed: {str(e)}'
+        }, status=400)
+
+@csrf_exempt
+def verify_razorpay_payment(request):
+    """Verify Razorpay payment signature and update transaction"""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST method required'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        payment_id = data.get('payment_id')
+        order_id = data.get('order_id')
+        signature = data.get('signature')
+        transaction_id = data.get('transaction_id')
+        
+        if not all([payment_id, order_id, signature]):
+            return JsonResponse({
+                'success': False,
+                'error': 'Missing payment verification data'
+            }, status=400)
+        
+        # Verify signature
+        body = order_id + "|" + payment_id
+        expected_signature = hmac.new(
+            RAZORPAY_KEY_SECRET.encode('utf-8'),
+            body.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+        
+        if expected_signature != signature:
+            return JsonResponse({
+                'success': False,
+                'error': 'Invalid payment signature'
+            }, status=400)
+        
+        # Get transaction from database - FIXED: Look by razorpay_order_id first
+        try:
+            if transaction_id:
+                transaction = PaymentTransaction.objects.get(transaction_id=transaction_id)
+            else:
+                transaction = PaymentTransaction.objects.get(razorpay_order_id=order_id)
+        except PaymentTransaction.DoesNotExist:
+            # Try to find by order_id if transaction_id not found
+            try:
+                transaction = PaymentTransaction.objects.get(razorpay_order_id=order_id)
+            except PaymentTransaction.DoesNotExist:
+                return JsonResponse({
+                    'success': False,
+                    'error': f'Transaction not found for order_id: {order_id}'
+                }, status=404)
+        
+        # Update transaction with payment details
+        transaction.razorpay_payment_id = payment_id
+        transaction.razorpay_signature = signature
+        transaction.status = 'completed'
+        transaction.completed_at = timezone.now()
+        transaction.save()
+        
+        # Mark job as paid
+        try:
+            if transaction.payment_type in ['owner_booking', 'advance']:
+                job = OwnerJobPost.objects.get(id=transaction.job_id)
+                job.is_paid = True
+                job.save()
+            elif transaction.payment_type in ['worker_booking', 'full']:
+                job = WorkerAvailability.objects.get(id=transaction.job_id)
+                job.is_paid = True
+                job.save()
+        except (OwnerJobPost.DoesNotExist, WorkerAvailability.DoesNotExist):
+            pass  # Job might not exist, but payment is still valid
+        
+        return JsonResponse({
+            'success': True,
+            'message': 'Payment verified successfully',
+            'transaction_id': transaction.transaction_id
+        })
+        
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': f'Payment verification failed: {str(e)}'
+        }, status=400)
+
+@csrf_exempt
+def handle_payment_failure(request):
+    """Handle failed/cancelled payments"""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST method required'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        order_id = data.get('order_id')
+        reason = data.get('reason', 'Payment cancelled by user')
+        
+        if not order_id:
+            return JsonResponse({
+                'success': False,
+                'error': 'Order ID required'
+            }, status=400)
+        
+        # Find transaction and mark as failed
+        try:
+            transaction = PaymentTransaction.objects.get(razorpay_order_id=order_id)
+            transaction.status = 'failed'
+            transaction.save()
+            
+            return JsonResponse({
+                'success': True,
+                'message': 'Payment marked as failed'
+            })
+        except PaymentTransaction.DoesNotExist:
+            return JsonResponse({
+                'success': False,
+                'error': 'Transaction not found'
+            }, status=404)
+        
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': f'Error handling payment failure: {str(e)}'
+        }, status=500)
+
+@csrf_exempt
+def get_payment_status(request, transaction_id):
+    """Get payment status for a transaction"""
+    if request.method != 'GET':
+        return JsonResponse({'success': False, 'error': 'GET method required'}, status=405)
+    
+    try:
+        transaction = PaymentTransaction.objects.get(transaction_id=transaction_id)
+        
+        return JsonResponse({
+            'success': True,
+            'transaction': {
+                'transaction_id': transaction.transaction_id,
+                'status': transaction.status,
+                'amount': float(transaction.amount),
+                'currency': transaction.currency,
+                'payment_type': transaction.payment_type,
+                'created_at': transaction.created_at.isoformat(),
+                'completed_at': transaction.completed_at.isoformat() if transaction.completed_at else None,
+                'razorpay_payment_id': transaction.razorpay_payment_id,
+                'razorpay_order_id': transaction.razorpay_order_id,
+            }
+        })
+        
+    except PaymentTransaction.DoesNotExist:
+        return JsonResponse({
+            'success': False,
+            'error': 'Transaction not found'
+        }, status=404)
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': f'Error fetching payment status: {str(e)}'
+        }, status=500)
+
+@csrf_exempt
+def get_payment_history(request):
+    """Get payment history for a user"""
+    if request.method != 'GET':
+        return JsonResponse({'success': False, 'error': 'GET method required'}, status=405)
+    
+    try:
+        user_email = request.GET.get('email')
+        if not user_email:
+            return JsonResponse({
+                'success': False,
+                'error': 'Email parameter required'
+            }, status=400)
+        
+        transactions = PaymentTransaction.objects.filter(
+            user_email=user_email
+        ).order_by('-created_at')
+        
+        payment_list = []
+        for transaction in transactions:
+            payment_list.append({
+                'transaction_id': transaction.transaction_id,
+                'status': transaction.status,
+                'amount': float(transaction.amount),
+                'currency': transaction.currency,
+                'payment_type': transaction.payment_type,
+                'job_id': transaction.job_id,
+                'created_at': transaction.created_at.isoformat(),
+                'completed_at': transaction.completed_at.isoformat() if transaction.completed_at else None,
+            })
+        
+        return JsonResponse({
+            'success': True,
+            'payments': payment_list,
+            'count': len(payment_list)
+        })
+        
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': f'Error fetching payment history: {str(e)}'
+        }, status=500)
+
+@csrf_exempt
+def process_refund(request):
+    """Process refund for a payment"""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST method required'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        payment_id = data.get('payment_id')
+        amount = data.get('amount')  # Amount in paise
+        reason = data.get('reason', 'Refund requested')
+        
+        if not payment_id or not amount:
+            return JsonResponse({
+                'success': False,
+                'error': 'Payment ID and amount required'
+            }, status=400)
+        
+        # Get transaction
+        try:
+            transaction = PaymentTransaction.objects.get(razorpay_payment_id=payment_id)
+        except PaymentTransaction.DoesNotExist:
+            return JsonResponse({
+                'success': False,
+                'error': 'Transaction not found'
+            }, status=404)
+        
+        # Create refund with Razorpay
+        refund_data = {
+            'amount': int(amount),
+            'notes': {
+                'reason': reason,
+                'transaction_id': transaction.transaction_id
+            }
+        }
+        
+        refund = client.payment.refund(payment_id, refund_data)
+        
+        # Create refund record
+        refund_record = PaymentRefund.objects.create(
+            transaction=transaction,
+            refund_amount=Decimal(str(amount / 100)),
+            reason=reason,
+            razorpay_refund_id=refund['id'],
+            status='processed'
+        )
+        
+        # Update transaction status
+        transaction.status = 'refunded'
+        transaction.save()
+        
+        return JsonResponse({
+            'success': True,
+            'refund_id': refund['id'],
+            'message': 'Refund processed successfully'
+        })
+        
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': f'Refund processing failed: {str(e)}'
+        }, status=500)
+
+@csrf_exempt
+def request_payout(request):
+    """Request payout for workers"""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST method required'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        worker_email = data.get('worker_email')
+        worker_upi = data.get('worker_upi')
+        amount = data.get('amount')
+        job_id = data.get('job_id')
+        
+        if not all([worker_email, worker_upi, amount, job_id]):
+            return JsonResponse({
+                'success': False,
+                'error': 'Missing required fields'
+            }, status=400)
+        
+        # Create payout request
+        payout = PayoutRequest.objects.create(
+            worker_email=worker_email,
+            worker_upi=worker_upi,
+            amount=Decimal(str(amount)),
+            job_id=job_id,
+            status='pending'
+        )
+        
+        return JsonResponse({
+            'success': True,
+            'message': 'Payout request submitted. You will receive payment within 24 hours.',
+            'payout_id': payout.id
+        })
+        
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': f'Payout request failed: {str(e)}'
+        }, status=500)
+
+# EXISTING VIEWS (keeping all your existing code)
 VALID_ROLES = ['worker', 'owner']
 
 def json_error(message, status=400):
@@ -76,6 +456,7 @@ def get_user_posts(request):
                 'description': post.description,
                 'created_at': post.created_at.isoformat(),
                 'is_completed': post.is_completed,
+                'is_paid': post.is_paid,
             })
         
         # Get worker availability posts
@@ -91,6 +472,7 @@ def get_user_posts(request):
                 'time_info': post.time_info,
                 'description': post.description,
                 'created_at': post.created_at.isoformat(),
+                'is_paid': post.is_paid,
             })
         
         # Sort by creation date (newest first)
@@ -155,11 +537,17 @@ def update_work_post(request, post_id):
         data = json.loads(request.body.decode('utf-8'))
         
         # Update fields
-        post.title = data.get('title', post.title)
-        post.price = Decimal(str(data.get('price', post.price)))
-        post.district = data.get('district', post.district)
-        post.address = data.get('address', post.address)
-        post.description = data.get('description', post.description)
+        if 'title' in data:
+            post.title = data['title']
+        if 'price' in data:
+            post.price = Decimal(str(data['price']))
+        if 'district' in data:
+            post.district = data['district']
+        if 'address' in data:
+            post.address = data['address']
+        if 'description' in data:
+            post.description = data['description']
+        
         post.save()
         
         return JsonResponse({
@@ -172,7 +560,8 @@ def update_work_post(request, post_id):
                 'district': post.district,
                 'address': post.address,
                 'description': post.description,
-                'type': 'work'
+                'type': 'work',
+                'is_paid': post.is_paid,
             }
         })
     except OwnerJobPost.DoesNotExist:
@@ -194,12 +583,19 @@ def update_worker_post(request, post_id):
         data = json.loads(request.body.decode('utf-8'))
         
         # Update fields
-        post.job_type = data.get('job_type', post.job_type)
-        post.price = Decimal(str(data.get('price', post.price)))
-        post.district = data.get('district', post.district)
-        post.place = data.get('place', post.place)
-        post.time_info = data.get('time_info', post.time_info)
-        post.description = data.get('description', post.description)
+        if 'job_type' in data:
+            post.job_type = data['job_type']
+        if 'price' in data:
+            post.price = Decimal(str(data['price']))
+        if 'district' in data:
+            post.district = data['district']
+        if 'place' in data:
+            post.place = data['place']
+        if 'time_info' in data:
+            post.time_info = data['time_info']
+        if 'description' in data:
+            post.description = data['description']
+            
         post.save()
         
         return JsonResponse({
@@ -207,13 +603,14 @@ def update_worker_post(request, post_id):
             'message': 'Post updated successfully',
             'post': {
                 'id': post.id,
-                'title': post.job_type,
+                'job_type': post.job_type,
                 'price': str(post.price),
                 'district': post.district,
                 'place': post.place,
                 'time_info': post.time_info,
                 'description': post.description,
-                'type': 'worker'
+                'type': 'worker',
+                'is_paid': post.is_paid,
             }
         })
     except WorkerAvailability.DoesNotExist:
@@ -291,7 +688,6 @@ def forgot_password_view(request):
         
         subject = 'AVAILABLE OTP - Password Reset'
         msg = f'Your 5-digit OTP is {code} (expires in 10 minutes).'
-        # email
         send_mail(subject, msg, None, [email], fail_silently=False)
         
         return JsonResponse({'success': True, 'message': f'OTP sent to {email}'})
@@ -390,7 +786,23 @@ def profile_to_dict(u: UserAccount, request):
     
     jobs_posted = OwnerJobPost.objects.filter(posted_by=u).count()
     jobs_completed = OwnerJobPost.objects.filter(posted_by=u, is_completed=True).count()
-    earnings_dec = OwnerJobPost.objects.filter(posted_by=u, is_completed=True).aggregate(total=Sum('price'))['total'] or Decimal('0.00')
+    
+    # Calculate real earnings from successful payments received for their job posts
+    earnings_transactions = PaymentTransaction.objects.filter(
+        job_id__in=OwnerJobPost.objects.filter(posted_by=u).values_list('id', flat=True),
+        status='completed'
+    )
+    total_earnings = earnings_transactions.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+    
+    # Calculate real spends (money paid by this user for others' job posts)
+    spend_transactions = PaymentTransaction.objects.filter(
+        user_email=u.email,
+        status='completed'
+    )
+    total_spends = spend_transactions.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+    
+    # Calculate available balance
+    available_balance = total_earnings - total_spends
     
     return {
         'email': u.email,
@@ -402,7 +814,9 @@ def profile_to_dict(u: UserAccount, request):
         'profile_image_url': img_url,
         'jobs_posted': jobs_posted,
         'jobs_completed': jobs_completed,
-        'earnings': float(earnings_dec),
+        'earnings': float(total_earnings),
+        'spends': float(total_spends),
+        'available_balance': float(available_balance),
     }
 
 @csrf_exempt
@@ -435,6 +849,8 @@ def profile_view(request):
                     'jobs_posted': 0,
                     'jobs_completed': 0,
                     'earnings': 0.0,
+                    'spends': 0.0,
+                    'available_balance': 0.0,
                 }
             })
         
@@ -527,6 +943,7 @@ def serialize_owner_job(j: OwnerJobPost, request):
         'description': j.description,
         'created_at': j.created_at.isoformat(),
         'is_completed': j.is_completed,
+        'is_paid': j.is_paid,
         'posted_by': serialize_user_brief(j.posted_by, request),
     }
 
@@ -540,6 +957,7 @@ def serialize_worker_avail(w: WorkerAvailability, request):
         'time_info': w.time_info,
         'description': w.description,
         'created_at': w.created_at.isoformat(),
+        'is_paid': w.is_paid,
         'posted_by': serialize_user_brief(w.posted_by, request),
     }
 
@@ -710,3 +1128,471 @@ def workers_view(request):
             return json_error(f'Error: {e}')
     
     return json_error('Method not allowed', 405)
+
+@csrf_exempt
+def payment_dashboard(request):
+    """GET /api/auth/payment/dashboard/ - Get all payment transactions with booking details"""
+    if request.method != 'GET':
+        return JsonResponse({'success': False, 'error': 'GET method required'}, status=405)
+    
+    try:
+        # Get all transactions with related job details
+        transactions = PaymentTransaction.objects.select_related().all().order_by('-created_at')
+        
+        payments = []
+        for transaction in transactions:
+            try:
+                # Get job details - try both OwnerJobPost and WorkerAvailability
+                job = None
+                job_owner = None
+                job_title = "Unknown Job"
+                
+                # First try OwnerJobPost
+                try:
+                    job = OwnerJobPost.objects.get(id=transaction.job_id)
+                    job_owner = job.posted_by
+                    job_title = job.title
+                except OwnerJobPost.DoesNotExist:
+                    # Try WorkerAvailability
+                    try:
+                        job = WorkerAvailability.objects.get(id=transaction.job_id)
+                        job_owner = job.posted_by
+                        job_title = job.job_type
+                    except WorkerAvailability.DoesNotExist:
+                        # Job not found in either table
+                        job_owner = None
+                        job_title = f"Job ID: {transaction.job_id} (Not Found)"
+                
+                # Get user details
+                try:
+                    user_account = UserAccount.objects.get(email=transaction.user_email)
+                    booker_name = user_account.name if user_account.name else transaction.user_email.split('@')[0]
+                except UserAccount.DoesNotExist:
+                    booker_name = transaction.user_email.split('@')[0]
+                
+                # Get job owner details
+                if job_owner:
+                    job_owner_name = job_owner.name if job_owner.name else job_owner.email.split('@')[0]
+                    job_owner_email = job_owner.email
+                else:
+                    job_owner_name = "Unknown"
+                    job_owner_email = "Unknown"
+                
+                # Determine booking relationship
+                is_owner_booking = job_owner and job_owner.email == transaction.user_email
+                
+                payments.append({
+                    'transaction_id': transaction.transaction_id,
+                    'user_email': transaction.user_email,
+                    'amount': float(transaction.amount),
+                    'payment_type': transaction.payment_type,
+                    'status': transaction.status,
+                    'job_id': transaction.job_id,
+                    'job_title': job_title,
+                    'job_owner_email': job_owner_email,
+                    'job_owner_name': job_owner_name,
+                    'booker_name': booker_name,
+                    'is_owner_booking': is_owner_booking,
+                    'booking_relationship': f"{'Owner' if is_owner_booking else 'Worker'} → {'Worker' if is_owner_booking else 'Owner'}",
+                    'razorpay_payment_id': transaction.razorpay_payment_id,
+                    'razorpay_order_id': transaction.razorpay_order_id,
+                    'created_at': transaction.created_at.isoformat(),
+                    'completed_at': transaction.completed_at.isoformat() if transaction.completed_at else None,
+                })
+            except Exception as e:
+                # Handle any other errors
+                print(f"Error processing transaction {transaction.transaction_id}: {e}")
+                payments.append({
+                    'transaction_id': transaction.transaction_id,
+                    'user_email': transaction.user_email,
+                    'amount': float(transaction.amount),
+                    'payment_type': transaction.payment_type,
+                    'status': transaction.status,
+                    'job_id': transaction.job_id,
+                    'job_title': f"Error: {str(e)}",
+                    'job_owner_email': 'Unknown',
+                    'job_owner_name': 'Unknown',
+                    'booker_name': transaction.user_email.split('@')[0],
+                    'is_owner_booking': False,
+                    'booking_relationship': 'Unknown',
+                    'razorpay_payment_id': transaction.razorpay_payment_id,
+                    'razorpay_order_id': transaction.razorpay_order_id,
+                    'created_at': transaction.created_at.isoformat(),
+                    'completed_at': transaction.completed_at.isoformat() if transaction.completed_at else None,
+                })
+        
+        # Calculate stats
+        total_transactions = len(payments)
+        total_amount = sum(p['amount'] for p in payments)
+        completed_payments = len([p for p in payments if p['status'] == 'completed'])
+        pending_payments = len([p for p in payments if p['status'] == 'pending'])
+        failed_payments = len([p for p in payments if p['status'] == 'failed'])
+        
+        stats = {
+            'total_transactions': total_transactions,
+            'total_amount': total_amount,
+            'completed_payments': completed_payments,
+            'pending_payments': pending_payments,
+            'failed_payments': failed_payments,
+        }
+        
+        return JsonResponse({
+            'success': True,
+            'payments': payments,
+            'stats': stats
+        })
+        
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': f'Error loading payment data: {str(e)}'
+        }, status=500)
+
+def payment_dashboard_view(request):
+    """Render payment dashboard HTML page"""
+    return render(request, 'id/payment.html')
+
+@csrf_exempt
+def get_my_jobs_booked(request):
+    """GET /api/auth/my-jobs-booked/?email=... - Get jobs booked by current user"""
+    if request.method != 'GET':
+        return JsonResponse({'success': False, 'error': 'GET method required'}, status=405)
+    
+    try:
+        user_email = request.GET.get('email')
+        if not user_email:
+            return JsonResponse({
+                'success': False,
+                'error': 'Email parameter required'
+            }, status=400)
+        
+        # Get ALL transactions for this user (both as booker and as job owner)
+        transactions = PaymentTransaction.objects.filter(
+            user_email=user_email,
+            status='completed'
+        ).order_by('-created_at')
+        
+        bookings = []
+        for transaction in transactions:
+            try:
+                # Get job details - try both OwnerJobPost and WorkerAvailability
+                job = None
+                job_owner = None
+                job_title = "Unknown Job"
+                
+                # First try OwnerJobPost
+                try:
+                    job = OwnerJobPost.objects.get(id=transaction.job_id)
+                    job_owner = job.posted_by
+                    job_title = job.title
+                except OwnerJobPost.DoesNotExist:
+                    # Try WorkerAvailability
+                    try:
+                        job = WorkerAvailability.objects.get(id=transaction.job_id)
+                        job_owner = job.posted_by
+                        job_title = job.job_type
+                    except WorkerAvailability.DoesNotExist:
+                        # Job not found in either table
+                        job_owner = None
+                        job_title = f"Job ID: {transaction.job_id} (Not Found)"
+                
+                # Get user details
+                try:
+                    user_account = UserAccount.objects.get(email=transaction.user_email)
+                    booker_name = user_account.name if user_account.name else transaction.user_email.split('@')[0]
+                except UserAccount.DoesNotExist:
+                    booker_name = transaction.user_email.split('@')[0]
+                
+                # Get job owner details
+                if job_owner:
+                    job_owner_name = job_owner.name if job_owner.name else job_owner.email.split('@')[0]
+                    job_owner_email = job_owner.email
+                else:
+                    job_owner_name = "Unknown"
+                    job_owner_email = "Unknown"
+                
+                # Determine if user is the booker or job owner
+                is_job_owner = job_owner and job_owner.email == user_email
+                is_accepted = job.is_paid if job else False
+                
+                if is_job_owner:
+                    # User is the job owner - show who booked this job
+                    bookings.append({
+                        'id': transaction.id,
+                        'job_title': job_title,
+                        'booker_name': booker_name,
+                        'booker_email': transaction.user_email,
+                        'job_owner_name': job_owner_name,
+                        'job_owner_email': job_owner_email,
+                        'advance_amount': float(transaction.amount),
+                        'remaining_amount': float(job.price - transaction.amount) if job else 0.0,
+                        'status': 'accepted' if is_accepted else 'pending',
+                        'transaction_type': 'owner_hiring',
+                        'created_at': transaction.created_at.isoformat(),
+                    })
+                else:
+                    # User is the booker - show jobs they booked
+                    bookings.append({
+                        'id': transaction.id,
+                        'job_title': job_title,
+                        'booker_name': booker_name,
+                        'booker_email': transaction.user_email,
+                        'job_owner_name': job_owner_name,
+                        'job_owner_email': job_owner_email,
+                        'advance_amount': float(transaction.amount),
+                        'remaining_amount': float(job.price - transaction.amount) if job else 0.0,
+                        'status': 'accepted' if is_accepted else 'pending',
+                        'transaction_type': 'worker_booking',
+                        'created_at': transaction.created_at.isoformat(),
+                    })
+            except Exception as e:
+                print(f"Error processing transaction {transaction.transaction_id}: {e}")
+                continue
+        
+        return JsonResponse({
+            'success': True,
+            'bookings': bookings
+        })
+        
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': f'Error loading bookings: {str(e)}'
+        }, status=500)
+
+@csrf_exempt
+def get_earnings_data(request):
+    """GET /api/auth/earnings/?email=... - Get user earnings and spends"""
+    if request.method != 'GET':
+        return JsonResponse({'success': False, 'error': 'GET method required'}, status=405)
+    
+    try:
+        user_email = request.GET.get('email')
+        if not user_email:
+            return JsonResponse({
+                'success': False,
+                'error': 'Email parameter required'
+            }, status=400)
+        
+        # Calculate earnings (money received)
+        earnings_transactions = PaymentTransaction.objects.filter(
+            job_id__in=OwnerJobPost.objects.filter(posted_by__email=user_email).values_list('id', flat=True),
+            status='completed'
+        )
+        total_earnings = earnings_transactions.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        
+        # Calculate spends (money paid)
+        spend_transactions = PaymentTransaction.objects.filter(
+            user_email=user_email,
+            status='completed'
+        )
+        total_spends = spend_transactions.aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
+        
+        # Calculate available balance
+        available_balance = total_earnings - total_spends
+        
+        return JsonResponse({
+            'success': True,
+            'earnings': {
+                'total_earnings': float(total_earnings),
+                'total_spends': float(total_spends),
+                'available_balance': float(available_balance),
+            }
+        })
+        
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': f'Error loading earnings: {str(e)}'
+        }, status=500)
+
+@csrf_exempt
+def accept_booking(request):
+    """POST /api/auth/accept-booking/ - Accept a booking"""
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POST method required'}, status=405)
+    
+    try:
+        data = json.loads(request.body)
+        booking_id = data.get('booking_id')
+        accepted = data.get('accepted', False)
+        
+        if not booking_id:
+            return JsonResponse({
+                'success': False,
+                'error': 'Booking ID required'
+            }, status=400)
+        
+        # Update the job as accepted
+        transaction = PaymentTransaction.objects.get(id=booking_id)
+        job = OwnerJobPost.objects.get(id=transaction.job_id)
+        
+        if accepted:
+            # Mark the job as paid/accepted
+            job.is_paid = True
+            job.save()
+            
+            # Generate QR code data for remaining payment
+            remaining_amount = float(job.price - transaction.amount)
+            qr_data = f"upi://pay?pa=your-upi-id&pn=AVAILABLE&am={remaining_amount}&tn=Remaining-{job.id}"
+            
+            return JsonResponse({
+                'success': True,
+                'message': 'Booking accepted',
+                'qr_data': qr_data,
+                'remaining_amount': remaining_amount
+            })
+        
+        return JsonResponse({
+            'success': True,
+            'message': 'Booking updated'
+        })
+        
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': f'Error accepting booking: {str(e)}'
+        }, status=500)
+
+@csrf_exempt
+def get_accepted_orders(request):
+    """GET /api/auth/accepted-orders/?email=... - Get accepted orders for job owners"""
+    if request.method != 'GET':
+        return JsonResponse({'success': False, 'error': 'GET method required'}, status=405)
+    
+    try:
+        user_email = request.GET.get('email')
+        if not user_email:
+            return JsonResponse({
+                'success': False,
+                'error': 'Email parameter required'
+            }, status=400)
+        
+        # Get accepted transactions where user is the job poster
+        accepted_transactions = PaymentTransaction.objects.filter(
+            job_id__in=OwnerJobPost.objects.filter(posted_by__email=user_email).values_list('id', flat=True),
+            status='completed'
+        ).filter(
+            job_id__in=OwnerJobPost.objects.filter(is_paid=True).values_list('id', flat=True)
+        ).order_by('-created_at')
+        
+        accepted_orders = []
+        for transaction in accepted_transactions:
+            try:
+                # Get job details
+                job = OwnerJobPost.objects.get(id=transaction.job_id)
+                if job.is_paid:  # Only show accepted jobs
+                    # Get user details
+                    try:
+                        user_account = UserAccount.objects.get(email=transaction.user_email)
+                        booker_name = user_account.name if user_account.name else transaction.user_email.split('@')[0]
+                    except UserAccount.DoesNotExist:
+                        booker_name = transaction.user_email.split('@')[0]
+                    
+                    # Get job owner details
+                    job_owner_name = job.posted_by.name if job.posted_by.name else job.posted_by.email.split('@')[0]
+                    
+                    accepted_orders.append({
+                        'id': transaction.id,
+                        'job_title': job.title,
+                        'booker_name': booker_name,
+                        'booker_email': transaction.user_email,
+                        'job_owner_name': job_owner_name,
+                        'job_owner_email': job.posted_by.email,
+                        'advance_amount': float(transaction.amount),
+                        'remaining_amount': float(job.price - transaction.amount),
+                        'status': 'accepted',
+                        'transaction_type': 'owner_hiring',
+                        'created_at': transaction.created_at.isoformat(),
+                    })
+            except OwnerJobPost.DoesNotExist:
+                continue
+        
+        return JsonResponse({
+            'success': True,
+            'accepted_orders': accepted_orders
+        })
+        
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': f'Error loading accepted orders: {str(e)}'
+        }, status=500)
+
+@csrf_exempt
+def debug_transaction(request):
+    """GET /api/auth/debug-transaction/?transaction_id=... - Debug specific transaction"""
+    if request.method != 'GET':
+        return JsonResponse({'success': False, 'error': 'GET method required'}, status=405)
+    
+    try:
+        transaction_id = request.GET.get('transaction_id')
+        if not transaction_id:
+            return JsonResponse({'success': False, 'error': 'Transaction ID required'}, status=400)
+        
+        # Get transaction
+        try:
+            transaction = PaymentTransaction.objects.get(transaction_id=transaction_id)
+        except PaymentTransaction.DoesNotExist:
+            return JsonResponse({'success': False, 'error': 'Transaction not found'}, status=404)
+        
+        # Try to find job
+        job_info = {}
+        try:
+            job = OwnerJobPost.objects.get(id=transaction.job_id)
+            job_info = {
+                'found': True,
+                'type': 'OwnerJobPost',
+                'title': job.title,
+                'owner_email': job.posted_by.email,
+                'owner_name': job.posted_by.name,
+            }
+        except OwnerJobPost.DoesNotExist:
+            try:
+                job = WorkerAvailability.objects.get(id=transaction.job_id)
+                job_info = {
+                    'found': True,
+                    'type': 'WorkerAvailability',
+                    'title': job.job_type,
+                    'owner_email': job.posted_by.email,
+                    'owner_name': job.posted_by.name,
+                }
+            except WorkerAvailability.DoesNotExist:
+                job_info = {
+                    'found': False,
+                    'error': 'Job not found in either table',
+                }
+        
+        # Get user info
+        try:
+            user = UserAccount.objects.get(email=transaction.user_email)
+            user_info = {
+                'found': True,
+                'name': user.name,
+                'email': user.email,
+            }
+        except UserAccount.DoesNotExist:
+            user_info = {
+                'found': False,
+                'error': 'User not found',
+            }
+        
+        return JsonResponse({
+            'success': True,
+            'transaction': {
+                'transaction_id': transaction.transaction_id,
+                'user_email': transaction.user_email,
+                'job_id': transaction.job_id,
+                'amount': float(transaction.amount),
+                'status': transaction.status,
+                'payment_type': transaction.payment_type,
+            },
+            'job_info': job_info,
+            'user_info': user_info,
+        })
+        
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': f'Debug error: {str(e)}'
+        }, status=500)
