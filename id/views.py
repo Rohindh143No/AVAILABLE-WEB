@@ -1390,44 +1390,41 @@ def get_earnings_data(request):
 
 @csrf_exempt
 def accept_booking(request):
-    """
-    POST /api/auth/accept-booking/
-    {transaction_id: , accept: true/false}
-    """
     if request.method != 'POST':
         return JsonResponse({'success': False, 'error': 'POST method required'}, status=405)
-
-    data = json.loads(request.body)
-    transaction_id = data.get('transaction_id')
-    accept = data.get('accept', True)
-
     try:
-        txn = PaymentTransaction.objects.get(transaction_id=transaction_id)
-        # Figure out booking type, get job, update
-        job = None
-        if txn.payment_type in ['owner_booking', 'advance']:
-            job = OwnerJobPost.objects.get(id=txn.job_id)
-        elif txn.payment_type in ['worker_booking', 'full']:
-            job = WorkerAvailability.objects.get(id=txn.job_id)
-        if not job:
-            return JsonResponse({'success': False, 'error': 'Job not found'}, status=404)
+        data = json.loads(request.body)
+        booking_id = data.get('booking_id')
+        accepted = data.get('accepted', False)  # if you pass accepted: true/false from frontend
 
-        if accept:
-            job.status = 'accepted'
-            job.save()
-            txn.status = 'accepted'
-            txn.save()
-            return JsonResponse({'success': True, 'message': 'Booking accepted'})
-        else:
-            # Optionally: refund/pay back logic
-            job.status = 'rejected'
-            job.is_paid = False
-            job.save()
-            txn.status = 'rejected'
-            txn.save()
-            return JsonResponse({'success': True, 'message': 'Booking rejected'})
+        if not booking_id:
+            return JsonResponse({'success': False, 'error': 'Booking ID required'}, status=400)
+
+        try:
+            transaction = PaymentTransaction.objects.get(transactionid=booking_id)
+        except PaymentTransaction.DoesNotExist:
+            return JsonResponse({'success': False, 'error': 'Booking not found'}, status=404)
+
+        # Example: mark as accepted, paid, etc. - adjust as per your logic
+        transaction.status = 'accepted' if accepted else 'rejected'
+        transaction.save()
+
+        # Optionally update job/worker status too
+        try:
+            if transaction.payment_type in ['owner_booking', 'advance']:
+                job = OwnerJobPost.objects.get(id=transaction.job_id)
+                job.status = 'accepted' if accepted else 'rejected'
+                job.save()
+            elif transaction.payment_type in ['worker_booking', 'full']:
+                worker = WorkerAvailability.objects.get(id=transaction.job_id)
+                worker.status = 'accepted' if accepted else 'rejected'
+                worker.save()
+        except Exception as job_err:
+            pass  # If job/work is missing, still allow booking update
+
+        return JsonResponse({'success': True, 'message': 'Booking updated'})
     except Exception as e:
-        return JsonResponse({'success': False, 'error': f'Accept booking failed: {str(e)}'}, status=500)
+        return JsonResponse({'success': False, 'error': f'Booking acceptance failed: {str(e)}'}, status=400)
 
 @csrf_exempt
 def get_accepted_orders(request):

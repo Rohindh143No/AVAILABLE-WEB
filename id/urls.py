@@ -7,7 +7,7 @@ from .views import (
     create_razorpay_order, verify_razorpay_payment, get_payment_status,
     get_payment_history, process_refund, request_payout, payment_dashboard, payment_dashboard_view,
     handle_payment_failure, get_my_jobs_booked, get_earnings_data, accept_booking,
-    get_accepted_orders,debug_transaction
+    get_accepted_orders,debug_transaction,get_user_bookings
 )
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
@@ -54,4 +54,5 @@ urlpatterns = [
     path('accept-booking/', accept_booking, name='accept-booking'),
     path('accepted-orders/', get_accepted_orders, name='accepted-orders'),
     path('debug-transaction/', debug_transaction, name='debug-transaction'),
+    path('get-user-bookings/', get_user_bookings),
 ]
