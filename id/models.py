@@ -22,7 +22,6 @@ class UserAccount(models.Model):
     def __str__(self):
         return self.email
 
-
 class EmailOTP(models.Model):
     email = models.EmailField()
     code = models.CharField(max_length=5)
@@ -33,6 +32,13 @@ class EmailOTP(models.Model):
     def __str__(self):
         return f"{self.email} - {self.code}"
 
+# --- Booking status choices used for two-way acceptance ---
+BOOKING_STATUS_CHOICES = [
+    ('available', 'Available'),
+    ('pending_accept', 'Pending Acceptance'),
+    ('accepted', 'Accepted'),
+    ('rejected', 'Rejected'),
+]
 
 class OwnerJobPost(models.Model):
     posted_by = models.ForeignKey(UserAccount, on_delete=models.CASCADE)
@@ -42,12 +48,12 @@ class OwnerJobPost(models.Model):
     address = models.CharField(max_length=200)
     description = models.TextField(blank=True, default='')
     is_completed = models.BooleanField(default=False)
-    is_paid = models.BooleanField(default=False)  # NEW: Track if job is paid
+    is_paid = models.BooleanField(default=False)  # Track if job is paid
+    status = models.CharField(max_length=20, choices=BOOKING_STATUS_CHOICES, default='available')  # NEW: Booking status
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         return f"{self.title} - {self.posted_by.email}"
-
 
 class WorkerAvailability(models.Model):
     posted_by = models.ForeignKey(UserAccount, on_delete=models.CASCADE)
@@ -57,14 +63,13 @@ class WorkerAvailability(models.Model):
     place = models.CharField(max_length=120)
     time_info = models.CharField(max_length=60)
     description = models.TextField(blank=True, default='')
-    is_paid = models.BooleanField(default=False)  # NEW: Track if availability is paid
+    is_paid = models.BooleanField(default=False)  # Track if availability is paid
+    status = models.CharField(max_length=20, choices=BOOKING_STATUS_CHOICES, default='available')  # NEW: Booking status
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         return f"{self.job_type} - {self.posted_by.email}"
 
-
-# ENHANCED PAYMENT MODELS
 class PaymentTransaction(models.Model):
     PAYMENT_TYPES = [
         ('owner_booking', 'Owner Booking Worker'),
@@ -72,19 +77,20 @@ class PaymentTransaction(models.Model):
         ('advance', 'Advance Payment'),
         ('full', 'Full Payment'),
     ]
-    
     STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('completed', 'Completed'),
         ('failed', 'Failed'),
         ('refunded', 'Refunded'),
+        ('accepted', 'Accepted'),  # Extended for two-way accept
+        ('rejected', 'Rejected'),  # Extended for two-way reject
     ]
-    
+
     # Razorpay fields
     razorpay_order_id = models.CharField(max_length=100, blank=True, null=True)
     razorpay_payment_id = models.CharField(max_length=100, blank=True, null=True)
     razorpay_signature = models.CharField(max_length=200, blank=True, null=True)
-    
+
     # Transaction details
     transaction_id = models.CharField(max_length=100, unique=True)
     user_email = models.EmailField()
@@ -92,25 +98,24 @@ class PaymentTransaction(models.Model):
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     payment_type = models.CharField(max_length=20, choices=PAYMENT_TYPES)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
-    
+
     # Additional fields
     currency = models.CharField(max_length=3, default='INR')
     description = models.TextField(blank=True, default='')
     metadata = models.JSONField(default=dict, blank=True)
-    
+
     # Timestamps
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
     completed_at = models.DateTimeField(blank=True, null=True)
-    
+
     def __str__(self):
         return f"{self.transaction_id} - ₹{self.amount} - {self.status}"
-    
+
     def mark_completed(self):
         self.status = 'completed'
         self.completed_at = timezone.now()
         self.save()
-
 
 class PayoutRequest(models.Model):
     STATUS_CHOICES = [
@@ -118,24 +123,23 @@ class PayoutRequest(models.Model):
         ('processed', 'Processed'),
         ('failed', 'Failed'),
     ]
-    
+
     worker_email = models.EmailField()
     worker_upi = models.CharField(max_length=100)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     job_id = models.CharField(max_length=100)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
-    
+
     # Razorpay payout fields
     razorpay_payout_id = models.CharField(max_length=100, blank=True, null=True)
     failure_reason = models.TextField(blank=True, default='')
-    
+
     # Timestamps
     processed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
-    
+
     def __str__(self):
         return f"{self.worker_email} - ₹{self.amount} - {self.status}"
-
 
 class PaymentRefund(models.Model):
     STATUS_CHOICES = [
@@ -143,19 +147,18 @@ class PaymentRefund(models.Model):
         ('processed', 'Processed'),
         ('failed', 'Failed'),
     ]
-    
     transaction = models.ForeignKey(PaymentTransaction, on_delete=models.CASCADE)
     refund_amount = models.DecimalField(max_digits=10, decimal_places=2)
     reason = models.TextField(blank=True, default='')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
-    
+
     # Razorpay refund fields
     razorpay_refund_id = models.CharField(max_length=100, blank=True, null=True)
     failure_reason = models.TextField(blank=True, default='')
-    
+
     # Timestamps
     created_at = models.DateTimeField(default=timezone.now)
     processed_at = models.DateTimeField(null=True, blank=True)
-    
+
     def __str__(self):
         return f"Refund for {self.transaction.transaction_id} - ₹{self.refund_amount}"

@@ -27,6 +27,56 @@ RAZORPAY_KEY_ID = 'rzp_live_RJjVAhSF0TYRxX'  # Replace with your test key
 RAZORPAY_KEY_SECRET = 'u0ToZ5Wb44xoozWM0usepuRK'  # Replace with your secret key
 
 client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+@csrf_exempt
+def get_user_bookings(request):
+    """
+    GET /api/auth/bookings/?email=...&role=...
+    Returns all bookings/orders (both sent and received, owner or worker).
+    """
+    if request.method != 'GET':
+        return JsonResponse({'success': False, 'error': 'GET method required'}, status=405)
+
+    user_email = request.GET.get('email', '').strip().lower()
+    role = (request.GET.get('role') or '').strip().lower()
+    if not user_email or role not in ['owner', 'worker']:
+        return JsonResponse({'success': False, 'error': 'Email and valid role required'}, status=400)
+
+    # For OWNER: bookings they've made (outgoing)
+    # For WORKER: bookings received (incoming)
+    outgoing = PaymentTransaction.objects.filter(user_email=user_email)
+    incoming = []
+
+    if role == 'owner':
+        incoming = PaymentTransaction.objects.filter(
+            job_id__in=WorkerAvailability.objects.filter(posted_by__email=user_email).values_list('id', flat=True)
+        )
+    else:
+        incoming = PaymentTransaction.objects.filter(
+            job_id__in=OwnerJobPost.objects.filter(posted_by__email=user_email).values_list('id', flat=True)
+        )
+
+    # combine and dedupe
+    bookings = outgoing | incoming
+    bookings = bookings.distinct().order_by('-created_at')
+
+    result = []
+    for txn in bookings:
+        # Find if this is an incoming or outgoing for this user
+        is_outgoing = (txn.user_email == user_email)
+        # Find status (pending, accepted, etc.) from related job or txn
+        status = getattr(txn, 'status', 'pending')
+        # (You might have a status field on job/txn for two-way acceptance logic)
+        result.append({
+            'transaction_id': txn.transaction_id,
+            'job_id': txn.job_id,
+            'user_email': txn.user_email,
+            'payment_type': txn.payment_type,
+            'is_outgoing': is_outgoing,
+            'status': status,
+            'created_at': txn.created_at.isoformat(),
+        })
+
+    return JsonResponse({'success': True, 'bookings': result})
 
 # RAZORPAY PAYMENT VIEWS
 @csrf_exempt
@@ -97,20 +147,21 @@ def verify_razorpay_payment(request):
     """Verify Razorpay payment signature and update transaction"""
     if request.method != 'POST':
         return JsonResponse({'success': False, 'error': 'POST method required'}, status=405)
-    
+
+    transaction = None  # Always define this at top!
     try:
         data = json.loads(request.body)
         payment_id = data.get('payment_id')
         order_id = data.get('order_id')
         signature = data.get('signature')
         transaction_id = data.get('transaction_id')
-        
+
         if not all([payment_id, order_id, signature]):
             return JsonResponse({
                 'success': False,
                 'error': 'Missing payment verification data'
             }, status=400)
-        
+
         # Verify signature
         body = order_id + "|" + payment_id
         expected_signature = hmac.new(
@@ -118,21 +169,20 @@ def verify_razorpay_payment(request):
             body.encode('utf-8'),
             hashlib.sha256
         ).hexdigest()
-        
+
         if expected_signature != signature:
             return JsonResponse({
                 'success': False,
                 'error': 'Invalid payment signature'
             }, status=400)
-        
-        # Get transaction from database - FIXED: Look by razorpay_order_id first
+
+        # Get transaction from database
         try:
             if transaction_id:
                 transaction = PaymentTransaction.objects.get(transaction_id=transaction_id)
             else:
                 transaction = PaymentTransaction.objects.get(razorpay_order_id=order_id)
         except PaymentTransaction.DoesNotExist:
-            # Try to find by order_id if transaction_id not found
             try:
                 transaction = PaymentTransaction.objects.get(razorpay_order_id=order_id)
             except PaymentTransaction.DoesNotExist:
@@ -140,33 +190,35 @@ def verify_razorpay_payment(request):
                     'success': False,
                     'error': f'Transaction not found for order_id: {order_id}'
                 }, status=404)
-        
+
         # Update transaction with payment details
         transaction.razorpay_payment_id = payment_id
         transaction.razorpay_signature = signature
         transaction.status = 'completed'
         transaction.completed_at = timezone.now()
         transaction.save()
-        
-        # Mark job as paid
+
+        # Mark job as paid and set status to pending_accept, as per your update
         try:
             if transaction.payment_type in ['owner_booking', 'advance']:
                 job = OwnerJobPost.objects.get(id=transaction.job_id)
-                job.is_paid = True
+                job.is_paid = True  # prevent double booking
+                job.status = 'pending_accept'  # NEW: waiting for worker acceptance
                 job.save()
             elif transaction.payment_type in ['worker_booking', 'full']:
                 job = WorkerAvailability.objects.get(id=transaction.job_id)
                 job.is_paid = True
+                job.status = 'pending_accept'  # NEW: waiting for owner acceptance
                 job.save()
         except (OwnerJobPost.DoesNotExist, WorkerAvailability.DoesNotExist):
             pass  # Job might not exist, but payment is still valid
-        
+
         return JsonResponse({
             'success': True,
             'message': 'Payment verified successfully',
             'transaction_id': transaction.transaction_id
         })
-        
+
     except Exception as e:
         return JsonResponse({
             'success': False,
@@ -876,7 +928,7 @@ def profile_view(request):
                 return json_error('Account not found', 404)
             
             if len(bio) > 100:
-                return json_error('Bio must be ≤100 chars')
+                return json_error('Bio must be â‰¤100 chars')
             
             if not phone_number:
                 return json_error('Phone number required')
@@ -963,171 +1015,101 @@ def serialize_worker_avail(w: WorkerAvailability, request):
 
 @csrf_exempt
 def work_view(request):
-    """GET /api/auth/work?q=...&district=...&min_price=...&max_price=...&page=...
-    
-    POST /api/auth/work (owner only)
-    body: {email, title, price, district, address, description}
-    """
     if request.method == 'GET':
-        qs = OwnerJobPost.objects.all().order_by('-created_at')
-        
-        q = (request.GET.get('q') or '').strip()
-        district = (request.GET.get('district') or '').strip()
-        min_price = (request.GET.get('min_price') or '').strip()
-        max_price = (request.GET.get('max_price') or '').strip()
-        
-        if q:
-            qs = qs.filter(Q(title__icontains=q) | Q(description__icontains=q) | Q(address__icontains=q))
-        
-        if district:
-            qs = qs.filter(district__icontains=district)
-        
+        jobs = OwnerJobPost.objects.filter(is_paid=False, status='available').order_by('-created_at')
+        resp = []
+        for job in jobs:
+            resp.append({
+                'id': job.id,
+                'title': job.title,
+                'posted_by': {
+                    'email': job.posted_by.email,
+                    'name': job.posted_by.name,
+                    'tag': job.posted_by.tag,
+                    'profile_image_url': job.posted_by.profile_image.url if job.posted_by.profile_image else '',
+                },
+                'price': float(job.price),
+                'district': job.district,
+                'address': job.address,
+                'description': job.description,
+                'created_at': job.created_at.isoformat(),
+                'is_paid': job.is_paid,
+                'status': job.status,
+            })
+        return JsonResponse({'success': True, 'results': resp})
+
+    elif request.method == 'POST':
         try:
-            if min_price:
-                qs = qs.filter(price__gte=Decimal(min_price))
-            if max_price:
-                qs = qs.filter(price__lte=Decimal(max_price))
-        except InvalidOperation:
-            return json_error('Invalid price filter')
-        
-        page_obj, paginator = paginate(request, qs, page_size=20)
-        
-        return JsonResponse({
-            'success': True,
-            'results': [serialize_owner_job(j, request) for j in page_obj.object_list],
-            'page': page_obj.number,
-            'num_pages': paginator.num_pages
-        })
-    
-    if request.method == 'POST':
-        try:
-            payload = json.loads(request.body.decode('utf-8'))
-            email = (payload.get('email') or '').strip().lower()
-            title = (payload.get('title') or '').strip()
-            price_raw = (payload.get('price') or '').strip()
-            district = (payload.get('district') or '').strip()
-            address = (payload.get('address') or '').strip()
-            description = (payload.get('description') or '').strip()
-            
-            if not email:
-                return json_error('Email required')
-            
-            try:
-                u = UserAccount.objects.get(email=email)
-            except UserAccount.DoesNotExist:
-                return json_error('Account not found', 404)
-            
-            if u.role != 'owner':
-                return json_error('Only owners can create work')
-            
-            if not title or not price_raw or not district or not address:
-                return json_error('title, price, district, address required')
-            
-            try:
-                price = Decimal(price_raw)
-            except InvalidOperation:
-                return json_error('Invalid price')
-            
-            j = OwnerJobPost.objects.create(
-                posted_by=u,
-                title=title[:120],
-                price=price,
-                district=district[:60],
-                address=address[:200],
-                description=description,
+            data = json.loads(request.body)
+            user_email = data.get('email')
+            user = UserAccount.objects.get(email=user_email)
+            job = OwnerJobPost.objects.create(
+                posted_by=user,
+                title=data.get('title', ''),
+                price=float(data.get('price', 0)),
+                district=data.get('district', ''),
+                address=data.get('address', ''),
+                description=data.get('description', ''),
+                is_completed=False,
+                is_paid=False,
+                status='available'
             )
-            
-            return JsonResponse({'success': True, 'job': serialize_owner_job(j, request)})
-            
+            return JsonResponse({'success': True, 'job_id': job.id})
         except Exception as e:
-            return json_error(f'Error: {e}')
+            return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+    else:
+        return JsonResponse({'success': False, 'error': 'GET or POST method required'}, status=405)
     
-    return json_error('Method not allowed', 405)
 
 @csrf_exempt
 def workers_view(request):
-    """GET /api/auth/workers?q=...&district=...&min_price=...&max_price=...&page=...
-    
-    POST /api/auth/workers (worker only)
-    body: {email, job_type, price, district, place, time_info, description}
-    """
     if request.method == 'GET':
-        qs = WorkerAvailability.objects.all().order_by('-created_at')
-        
-        q = (request.GET.get('q') or '').strip()
-        district = (request.GET.get('district') or '').strip()
-        min_price = (request.GET.get('min_price') or '').strip()
-        max_price = (request.GET.get('max_price') or '').strip()
-        
-        if q:
-            qs = qs.filter(Q(job_type__icontains=q) | Q(description__icontains=q) | Q(place__icontains=q))
-        
-        if district:
-            qs = qs.filter(district__icontains=district)
-        
+        workers = WorkerAvailability.objects.filter(is_paid=False, status='available').order_by('-created_at')
+        resp = []
+        for worker in workers:
+            resp.append({
+                'id': worker.id,
+                'job_type': worker.job_type,
+                'posted_by': {
+                    'email': worker.posted_by.email,
+                    'name': worker.posted_by.name,
+                    'tag': worker.posted_by.tag,
+                    'profile_image_url': worker.posted_by.profile_image.url if worker.posted_by.profile_image else '',
+                },
+                'price': float(worker.price),
+                'district': worker.district,
+                'place': worker.place,
+                'time_info': worker.time_info,
+                'description': worker.description,
+                'created_at': worker.created_at.isoformat(),
+                'is_paid': worker.is_paid,
+                'status': worker.status,
+            })
+        return JsonResponse({'success': True, 'results': resp})
+
+    elif request.method == 'POST':
         try:
-            if min_price:
-                qs = qs.filter(price__gte=Decimal(min_price))
-            if max_price:
-                qs = qs.filter(price__lte=Decimal(max_price))
-        except InvalidOperation:
-            return json_error('Invalid price filter')
-        
-        page_obj, paginator = paginate(request, qs, page_size=20)
-        
-        return JsonResponse({
-            'success': True,
-            'results': [serialize_worker_avail(w, request) for w in page_obj.object_list],
-            'page': page_obj.number,
-            'num_pages': paginator.num_pages
-        })
-    
-    if request.method == 'POST':
-        try:
-            payload = json.loads(request.body.decode('utf-8'))
-            email = (payload.get('email') or '').strip().lower()
-            job_type = (payload.get('job_type') or '').strip()
-            price_raw = (payload.get('price') or '').strip()
-            district = (payload.get('district') or '').strip()
-            place = (payload.get('place') or '').strip()
-            time_info = (payload.get('time_info') or '').strip()
-            description = (payload.get('description') or '').strip()
-            
-            if not email:
-                return json_error('Email required')
-            
-            try:
-                u = UserAccount.objects.get(email=email)
-            except UserAccount.DoesNotExist:
-                return json_error('Account not found', 404)
-            
-            if u.role != 'worker':
-                return json_error('Only workers can create availability')
-            
-            if not job_type or not price_raw or not district or not place or not time_info:
-                return json_error('job_type, price, district, place, time_info required')
-            
-            try:
-                price = Decimal(price_raw)
-            except InvalidOperation:
-                return json_error('Invalid price')
-            
-            w = WorkerAvailability.objects.create(
-                posted_by=u,
-                job_type=job_type[:120],
-                price=price,
-                district=district[:60],
-                place=place[:120],
-                time_info=time_info[:60],
-                description=description,
+            data = json.loads(request.body)
+            user_email = data.get('email')
+            user = UserAccount.objects.get(email=user_email)
+            worker = WorkerAvailability.objects.create(
+                posted_by=user,
+                job_type=data.get('job_type', ''),
+                price=float(data.get('price', 0)),
+                district=data.get('district', ''),
+                place=data.get('place', ''),
+                time_info=data.get('time_info', ''),
+                description=data.get('description', ''),
+                is_paid=False,
+                status='available'
             )
-            
-            return JsonResponse({'success': True, 'worker': serialize_worker_avail(w, request)})
-            
+            return JsonResponse({'success': True, 'worker_id': worker.id})
         except Exception as e:
-            return json_error(f'Error: {e}')
-    
-    return json_error('Method not allowed', 405)
+            return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+    else:
+        return JsonResponse({'success': False, 'error': 'GET or POST method required'}, status=405)
 
 @csrf_exempt
 def payment_dashboard(request):
@@ -1193,7 +1175,7 @@ def payment_dashboard(request):
                     'job_owner_name': job_owner_name,
                     'booker_name': booker_name,
                     'is_owner_booking': is_owner_booking,
-                    'booking_relationship': f"{'Owner' if is_owner_booking else 'Worker'} → {'Worker' if is_owner_booking else 'Owner'}",
+                    'booking_relationship': f"{'Owner' if is_owner_booking else 'Worker'} â†’ {'Worker' if is_owner_booking else 'Owner'}",
                     'razorpay_payment_id': transaction.razorpay_payment_id,
                     'razorpay_order_id': transaction.razorpay_order_id,
                     'created_at': transaction.created_at.isoformat(),
@@ -1408,51 +1390,44 @@ def get_earnings_data(request):
 
 @csrf_exempt
 def accept_booking(request):
-    """POST /api/auth/accept-booking/ - Accept a booking"""
+    """
+    POST /api/auth/accept-booking/
+    {transaction_id: , accept: true/false}
+    """
     if request.method != 'POST':
         return JsonResponse({'success': False, 'error': 'POST method required'}, status=405)
-    
+
+    data = json.loads(request.body)
+    transaction_id = data.get('transaction_id')
+    accept = data.get('accept', True)
+
     try:
-        data = json.loads(request.body)
-        booking_id = data.get('booking_id')
-        accepted = data.get('accepted', False)
-        
-        if not booking_id:
-            return JsonResponse({
-                'success': False,
-                'error': 'Booking ID required'
-            }, status=400)
-        
-        # Update the job as accepted
-        transaction = PaymentTransaction.objects.get(id=booking_id)
-        job = OwnerJobPost.objects.get(id=transaction.job_id)
-        
-        if accepted:
-            # Mark the job as paid/accepted
-            job.is_paid = True
+        txn = PaymentTransaction.objects.get(transaction_id=transaction_id)
+        # Figure out booking type, get job, update
+        job = None
+        if txn.payment_type in ['owner_booking', 'advance']:
+            job = OwnerJobPost.objects.get(id=txn.job_id)
+        elif txn.payment_type in ['worker_booking', 'full']:
+            job = WorkerAvailability.objects.get(id=txn.job_id)
+        if not job:
+            return JsonResponse({'success': False, 'error': 'Job not found'}, status=404)
+
+        if accept:
+            job.status = 'accepted'
             job.save()
-            
-            # Generate QR code data for remaining payment
-            remaining_amount = float(job.price - transaction.amount)
-            qr_data = f"upi://pay?pa=your-upi-id&pn=AVAILABLE&am={remaining_amount}&tn=Remaining-{job.id}"
-            
-            return JsonResponse({
-                'success': True,
-                'message': 'Booking accepted',
-                'qr_data': qr_data,
-                'remaining_amount': remaining_amount
-            })
-        
-        return JsonResponse({
-            'success': True,
-            'message': 'Booking updated'
-        })
-        
+            txn.status = 'accepted'
+            txn.save()
+            return JsonResponse({'success': True, 'message': 'Booking accepted'})
+        else:
+            # Optionally: refund/pay back logic
+            job.status = 'rejected'
+            job.is_paid = False
+            job.save()
+            txn.status = 'rejected'
+            txn.save()
+            return JsonResponse({'success': True, 'message': 'Booking rejected'})
     except Exception as e:
-        return JsonResponse({
-            'success': False,
-            'error': f'Error accepting booking: {str(e)}'
-        }, status=500)
+        return JsonResponse({'success': False, 'error': f'Accept booking failed: {str(e)}'}, status=500)
 
 @csrf_exempt
 def get_accepted_orders(request):
